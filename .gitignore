@@ -1,0 +1,38 @@
+# 现有 main 规则
+.tmp
+ref_skills
+
+# Go build artifacts
+/meegle
+/meego-cli
+/lark-project
+*.test
+dist/
+
+# Node / NPM
+node_modules/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# Worktrees
+.worktrees/
+
+# NPM platform binaries
+npm/meegle/bin/meegle-*
+
+# NPM files (copied from root at publish time)
+npm/meegle/README.md
+npm/meegle/README.zh-CN.md
+npm/meegle/CHANGELOG.md
+npm/meegle/LICENSE
+npm/meegle/THIRD_PARTY_NOTICES.md
+npm/meegle/third_party_licenses/
+
+# IDEA 
+.idea/

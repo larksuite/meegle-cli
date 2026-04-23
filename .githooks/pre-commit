@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Pre-commit hook: ensure all staged source files have a license header.
+# Requires: go install github.com/google/addlicense@latest
+
+set -euo pipefail
+
+if ! command -v addlicense &>/dev/null; then
+  ADDLICENSE="$(go env GOPATH)/bin/addlicense"
+  if [[ ! -x "$ADDLICENSE" ]]; then
+    echo "addlicense not found. Install: go install github.com/google/addlicense@latest"
+    exit 1
+  fi
+else
+  ADDLICENSE="addlicense"
+fi
+
+# Collect staged files (added or modified)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+if [[ -z "$STAGED" ]]; then
+  exit 0
+fi
+
+LICENSE_HEADER="$(git rev-parse --show-toplevel)/.license-header.txt"
+
+# Add license to staged files, then re-stage any that were modified
+MODIFIED=()
+for f in $STAGED; do
+  $ADDLICENSE -f "$LICENSE_HEADER" \
+    -ignore 'ref_skills/**' \
+    -ignore 'npm/**' \
+    -ignore 'vendor/**' \
+    -ignore 'node_modules/**' \
+    -ignore '.idea/**' \
+    -ignore '*.json' -ignore '*.md' -ignore '*.yaml' -ignore '*.yml' \
+    -ignore 'Makefile' -ignore 'go.mod' -ignore 'go.sum' \
+    -ignore '*.txt' -ignore 'LICENSE' \
+    "$f" 2>/dev/null || true
+
+  # If the file was modified by addlicense, re-stage it
+  if ! git diff --quiet -- "$f" 2>/dev/null; then
+    git add "$f"
+    MODIFIED+=("$f")
+  fi
+done
+
+if [[ ${#MODIFIED[@]} -gt 0 ]]; then
+  echo "addlicense: added header to ${#MODIFIED[@]} file(s) and re-staged them."
+fi

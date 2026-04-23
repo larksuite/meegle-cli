@@ -1,0 +1,40 @@
+{
+  "name": "@lark-project/meegle",
+  "version": "1.0.0",
+  "description": "Agent-First CLI for Meegle (Lark Project)",
+  "license": "MIT",
+  "bin": {
+    "meegle": "bin/meegle.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "files": [
+    "bin/meegle.js",
+    "bin/meegle-*",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "third_party_licenses/**"
+  ],
+  "scripts": {
+    "prepublishOnly": "cp ../../README.zh-CN.md ./README.zh-CN.md && cp ../../LICENSE ./LICENSE && cp ../../CHANGELOG.md ./CHANGELOG.md && cp ../../THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md && rm -rf ./third_party_licenses && cp -R ../../third_party_licenses ./third_party_licenses && cp ../../README.md ./README.md"
+  },
+  "keywords": [
+    "meegle",
+    "lark-project",
+    "cli",
+    "mcp"
+  ]
+}

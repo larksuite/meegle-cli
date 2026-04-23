@@ -1,0 +1,130 @@
+# golangci-lint configuration
+# Docs: https://golangci-lint.run/usage/configuration/
+# Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+run:
+  timeout: 5m
+  go: "1.21"
+  tests: true
+  modules-download-mode: readonly
+
+issues:
+  exclude-dirs:
+    - ref_skills
+    - vendor
+    - .worktrees
+    - dist
+    - third_party_licenses
+    - npm/meegle/bin
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Test code: relax length and error-check rules
+    - path: _test\.go
+      linters:
+        - funlen
+        - errcheck
+        - forbidigo
+    # forbidigo is only for low-level framework/integrations code.
+    # Product layers (cmd, internal/products, examples, test) legitimately print to stdout.
+    - path: ^cmd/
+      linters:
+        - forbidigo
+    - path: ^internal/products/
+      linters:
+        - forbidigo
+    - path: ^examples/
+      linters:
+        - forbidigo
+    - path: ^test/
+      linters:
+        - forbidigo
+    # Generated or vendored test fixtures
+    - path: testdata/
+      linters:
+        - funlen
+        - unused
+        - errcheck
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - staticcheck
+    - govet
+    - ineffassign
+    - unused
+    - gofmt
+    - goimports
+    - revive
+    - depguard
+    - forbidigo
+    - funlen
+
+linters-settings:
+  gofmt:
+    simplify: true
+  goimports:
+    local-prefixes: github.com/larksuite/meegle-cli
+  funlen:
+    # See R30: file/function size limit. Start lenient, tighten later.
+    # Cobra command constructors are long by nature (flag registration + sub-commands);
+    # 160 accommodates them without obscuring genuinely too-large functions.
+    lines: 160
+    statements: 100
+  revive:
+    severity: warning
+    rules:
+      - name: var-naming
+      - name: error-return
+      - name: error-naming
+      - name: if-return
+      - name: context-as-argument
+      - name: range-val-in-closure
+      - name: empty-block
+      - name: superfluous-else
+      - name: unreachable-code
+      - name: redefines-builtin-id
+
+  # R08: Architectural layering enforcement.
+  # Dependency direction (bottom → top):
+  #   pkg/framework → pkg/integrations → pkg/runtime → internal/products → cmd
+  # Lower layers must not import higher layers. Cross-product imports forbidden.
+  depguard:
+    rules:
+      framework-no-upper:
+        list-mode: lax
+        files:
+          - "**/pkg/framework/**"
+        deny:
+          - pkg: github.com/larksuite/meegle-cli/internal/products
+            desc: "pkg/framework/* must not import internal/products/* (layer inversion)."
+          - pkg: github.com/larksuite/meegle-cli/pkg/integrations
+            desc: "pkg/framework/* must not import pkg/integrations/* (layer inversion)."
+          - pkg: github.com/larksuite/meegle-cli/pkg/runtime
+            desc: "pkg/framework/* must not import pkg/runtime/* (layer inversion)."
+      integrations-no-product:
+        list-mode: lax
+        files:
+          - "**/pkg/integrations/**"
+        deny:
+          - pkg: github.com/larksuite/meegle-cli/internal/products
+            desc: "pkg/integrations/* must not import internal/products/* (layer inversion)."
+          - pkg: github.com/larksuite/meegle-cli/pkg/runtime
+            desc: "pkg/integrations/* must not import pkg/runtime/* (layer inversion)."
+      runtime-no-product:
+        list-mode: lax
+        files:
+          - "**/pkg/runtime/**"
+        deny:
+          - pkg: github.com/larksuite/meegle-cli/internal/products
+            desc: "pkg/runtime/* must not import internal/products/* (products depend on runtime, not the reverse)."
+
+  # R43: Pattern consistency — forbid known-bad patterns.
+  # Keep rules minimal to avoid noise; grow over time.
+  forbidigo:
+    # Framework and integrations should route output through pkg/framework/output,
+    # not write directly to stdout. cmd/ and tests are excluded via issues.exclude-rules.
+    forbid:
+      - p: '^fmt\.Print(ln|f)?$'
+        msg: "Use pkg/framework/output for CLI output; direct fmt.Print* breaks structured output."
