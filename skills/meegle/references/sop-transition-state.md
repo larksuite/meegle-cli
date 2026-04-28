@@ -15,7 +15,7 @@
 **并行执行**：
 
 1. **定位工作项**：从用户输入中提取 `work_item_id`、`project_key`、`work_item_type`。
-   - **URL 解析**：用户给了链接则**直接将完整 URL 传入工具的 `url` 参数**自动解析。**禁止**自行从 URL 路径截取 `simple_name` 作 `project_key`（会权限越界）。必要时通过 `project search` 获取唯一 `project_key`。
+   - **URL 解析**：用户给了链接则先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问。decode 返回的 `simple_name` 必须再调 `project search` 转为权威 `project_key`（同名空间可能有多个无权限）。**禁止**自己从 URL 截取路径段作参数。
    - **ID 类型**：传给任何工具的 `work_item_id` 必须是 **字符串（String）**。
    - 信息不足才追问。
 2. **获取当前用户**：调用 `user search`，入参 `["current_login_user()"]` 拿到当前用户的 `user_key`（下一步必填）。
@@ -57,7 +57,6 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 
 - `vote-boolean` / `vote-option` / `vote-option-multi`（投票类）
 - `compound_field` / `multi_user_compound_field`（复合明细表）
-- `file` / `multi-file`（附件）
 
 > 中断话术示例：「流转失败。当前状态需要填写【字段名】，该字段不支持自动化补充，请在页面手动填写后通知我继续。」
 
@@ -99,6 +98,7 @@ meegle workitem meta-fields --page-num 1 --project-key 空间key --work-item-typ
 | `schedule` | **stringified**，如 `"[1722182400000,1722355199999]"` |
 | `precise_date` | **stringified**，如 `"{\"start_time\":...,\"end_time\":...}"` |
 | `workitem_related_select` | 关联工作项 ID 字符串 |
+| `file` / `multi-file` | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-id <id> --field-key <field_key> <local-path>` 拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
 
 > **用户提供的是工作项名称而非 ID** 时，按主文档 [SKILL.md](../SKILL.md)「关联工作项名称 → ID 转换」完整流程（获取目标约束 → `workitem query` 搜索 → 消歧 → 按类型写入）处理。
 
@@ -134,7 +134,7 @@ meegle workflow transition-state --work-item-id 工作项ID --project-key 空间
 
 > 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「通用熔断规则」。以下为本 Skill 补充规则：
 
-1. **必填字段全部为硬拦截类型**（投票/复合/附件），无法通过接口写入。
+1. **必填字段全部为硬拦截类型**（投票/复合），无法通过接口写入。
 2. **同一目标状态**：补字段 → 再次流转连续失败 **> 2 次**。
 
 ---

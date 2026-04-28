@@ -27,6 +27,7 @@ func main() {
 		Config:     commands.NewConfigCmd(),
 		Inspect:    commands.NewInspectCmd(mappedCommands),
 		Completion: commands.NewCompletionCmd(),
+		URL:        commands.NewURLCmd(),
 	})
 	if err != nil {
 		fail(err)

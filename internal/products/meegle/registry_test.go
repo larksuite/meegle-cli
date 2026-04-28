@@ -25,6 +25,28 @@ func (u *unauthorizedLister) ListTools(_ context.Context) ([]types.ToolDefinitio
 		WithHTTPStatus(401)
 }
 
+// successLister returns a fixed tool list and counts ListTools calls.
+type successLister struct {
+	tools []types.ToolDefinition
+	calls int
+}
+
+func (s *successLister) ListTools(_ context.Context) ([]types.ToolDefinition, error) {
+	s.calls++
+	return s.tools, nil
+}
+
+// errorLister returns a fixed non-401 error and counts ListTools calls.
+type errorLister struct {
+	err   error
+	calls int
+}
+
+func (e *errorLister) ListTools(_ context.Context) ([]types.ToolDefinition, error) {
+	e.calls++
+	return nil, e.err
+}
+
 // memTokenStore is an in-memory auth.TokenStore for tests.
 type memTokenStore struct {
 	data    *auth.TokenData
@@ -44,27 +66,27 @@ func TestBuildCommandTree_GroupsByResource(t *testing.T) {
 
 	tree := buildCommandTree(commands)
 
+	// 2 discovered groups (view, workitem). The attachment group only exists
+	// when MCP discovery surfaces upload_file / get_download_url — these
+	// commands don't include them, so attachment is absent here.
 	if len(tree.Nodes) != 2 {
-		t.Fatalf("expected 2 groups, got %d", len(tree.Nodes))
+		t.Fatalf("expected 2 groups (view + workitem), got %d", len(tree.Nodes))
 	}
-	// sorted alphabetically: view, workitem
-	if tree.Nodes[0].Name != "view" {
-		t.Errorf("expected first group 'view', got %q", tree.Nodes[0].Name)
-	}
-	if tree.Nodes[1].Name != "workitem" {
-		t.Errorf("expected second group 'workitem', got %q", tree.Nodes[1].Name)
+	view := findNodeByName(tree.Nodes, "view")
+	workitem := findNodeByName(tree.Nodes, "workitem")
+	if view == nil || workitem == nil {
+		t.Fatalf("missing expected groups: view=%v workitem=%v", view, workitem)
 	}
 	// view: 1 discovered child. workitem: 2 discovered + 1 injected +batch-get.
-	if len(tree.Nodes[0].Children) != 1 {
-		t.Errorf("view group: expected 1 child, got %d", len(tree.Nodes[0].Children))
+	if len(view.Children) != 1 {
+		t.Errorf("view group: expected 1 child, got %d", len(view.Children))
 	}
-	if len(tree.Nodes[1].Children) != 3 {
-		t.Errorf("workitem group: expected 3 children (2 discovered + +batch-get), got %d", len(tree.Nodes[1].Children))
+	if len(workitem.Children) != 3 {
+		t.Errorf("workitem group: expected 3 children (2 discovered + +batch-get), got %d", len(workitem.Children))
 	}
 	// check HandlerRef
-	viewChild := tree.Nodes[0].Children[0]
-	if viewChild.HandlerRef != "get_view_detail" {
-		t.Errorf("expected HandlerRef 'get_view_detail', got %q", viewChild.HandlerRef)
+	if view.Children[0].HandlerRef != "get_view_detail" {
+		t.Errorf("expected HandlerRef 'get_view_detail', got %q", view.Children[0].HandlerRef)
 	}
 }
 
@@ -85,10 +107,16 @@ func TestBuildCommandTree_MapsParameterTypes(t *testing.T) {
 
 	tree := buildCommandTree(commands)
 
+	// 1 discovered (workitem). Attachment group is absent because no
+	// upload_file / get_download_url tools were supplied.
 	if len(tree.Nodes) != 1 {
-		t.Fatalf("expected 1 group, got %d", len(tree.Nodes))
+		t.Fatalf("expected 1 group (workitem), got %d", len(tree.Nodes))
 	}
-	leaf := tree.Nodes[0].Children[0]
+	workitem := findNodeByName(tree.Nodes, "workitem")
+	if workitem == nil {
+		t.Fatal("missing workitem group")
+	}
+	leaf := workitem.Children[0]
 	// url should be skipped → 5 flags
 	if len(leaf.Flags) != 5 {
 		t.Fatalf("expected 5 flags (url skipped), got %d", len(leaf.Flags))
@@ -119,8 +147,10 @@ func TestBuildCommandTree_MapsParameterTypes(t *testing.T) {
 	}
 }
 
-func TestDynamicRegistrySetup_FallsBackToStaticOnFailure(t *testing.T) {
-	// nil client + nil cache → should return empty tree without error
+func TestDynamicRegistrySetup_GracefulNoClient(t *testing.T) {
+	// nil client + nil cache → no MCP-discovered tools. All business commands
+	// (including attachment) come from MCP discovery, so the tree is empty
+	// and only framework built-ins remain after RootCommandCustomizer runs.
 	setup := NewDynamicRegistrySetup(nil, nil)
 
 	tree, err := setup.Setup(context.Background())
@@ -131,7 +161,7 @@ func TestDynamicRegistrySetup_FallsBackToStaticOnFailure(t *testing.T) {
 		t.Fatal("expected non-nil tree")
 	}
 	if len(tree.Nodes) != 0 {
-		t.Errorf("expected 0 nodes, got %d", len(tree.Nodes))
+		t.Errorf("expected 0 nodes (no MCP discovery), got %d", len(tree.Nodes))
 	}
 }
 
@@ -152,6 +182,9 @@ func TestDynamicRegistrySetup_Graceful401_ClearsTokenAndFlagsAuth(t *testing.T) 
 	if tree == nil {
 		t.Fatal("expected non-nil tree")
 	}
+	// Discovery returned no MCP tools, so the tree is empty. attachment
+	// commands come from MCP discovery now and follow the same fate as other
+	// business commands when auth fails.
 	if len(tree.Nodes) != 0 {
 		t.Errorf("expected empty tree on 401, got %d nodes", len(tree.Nodes))
 	}
@@ -178,7 +211,7 @@ func TestDynamicRegistrySetup_Graceful401_EnvSourceDoesNotErrorOrClear(t *testin
 		t.Fatalf("expected graceful degradation on 401 for SourceEnv, got error: %v", err)
 	}
 	if tree == nil || len(tree.Nodes) != 0 {
-		t.Error("expected empty tree on 401 for SourceEnv")
+		t.Errorf("expected empty tree on 401 for SourceEnv, got %d nodes", len(tree.Nodes))
 	}
 	if !setup.AuthFailed() {
 		t.Error("expected AuthFailed() to be true after 401 for SourceEnv")
@@ -262,5 +295,125 @@ func TestDynamicRegistrySetup_UsesCacheWhenAvailable(t *testing.T) {
 	}
 	if len(tree.Nodes) == 0 {
 		t.Error("expected nodes from cached tools, got 0")
+	}
+}
+
+func TestResolveTools_FreshCacheSkipsDiscovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	cache := NewToolCache(tmpDir, "default", DefaultTTL)
+	if err := cache.Set([]types.ToolDefinition{{Name: "cached_tool"}}); err != nil {
+		t.Fatalf("set cache: %v", err)
+	}
+
+	lister := &successLister{tools: []types.ToolDefinition{{Name: "fresh_tool"}}}
+	setup := NewDynamicRegistrySetup(lister, cache)
+
+	tools, err := setup.resolveTools(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lister.calls != 0 {
+		t.Errorf("fresh cache should skip discovery, got %d calls", lister.calls)
+	}
+	if len(tools) != 1 || tools[0].Name != "cached_tool" {
+		t.Errorf("expected cached tool, got %v", tools)
+	}
+}
+
+func TestResolveTools_StaleCacheRefreshesFromServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	cache := NewToolCache(tmpDir, "default", -1) // immediately stale
+	if err := cache.Set([]types.ToolDefinition{{Name: "stale_tool"}}); err != nil {
+		t.Fatalf("set cache: %v", err)
+	}
+
+	lister := &successLister{tools: []types.ToolDefinition{{Name: "fresh_tool"}}}
+	// cache TTL=-1 only affects Get's Stale flag; recreate Set's cache uses
+	// the same instance so the freshly written entry will also report Stale.
+	setup := NewDynamicRegistrySetup(lister, cache)
+
+	tools, err := setup.resolveTools(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lister.calls != 1 {
+		t.Errorf("stale cache should trigger discovery, got %d calls", lister.calls)
+	}
+	if len(tools) != 1 || tools[0].Name != "fresh_tool" {
+		t.Errorf("expected fresh tool, got %v", tools)
+	}
+	// Cache should be overwritten with fresh tools.
+	persisted, _ := cache.Get()
+	if persisted == nil || len(persisted.Tools) != 1 || persisted.Tools[0].Name != "fresh_tool" {
+		t.Errorf("expected cache overwritten, got %v", persisted)
+	}
+}
+
+func TestResolveTools_StaleCacheFallsBackOnDiscoveryError(t *testing.T) {
+	tmpDir := t.TempDir()
+	cache := NewToolCache(tmpDir, "default", -1)
+	if err := cache.Set([]types.ToolDefinition{{Name: "stale_tool"}}); err != nil {
+		t.Fatalf("set cache: %v", err)
+	}
+
+	lister := &errorLister{err: stderrors.New("network unreachable")}
+	setup := NewDynamicRegistrySetup(lister, cache)
+
+	tools, err := setup.resolveTools(context.Background())
+	if err != nil {
+		t.Fatalf("expected stale fallback, got error: %v", err)
+	}
+	if lister.calls != 1 {
+		t.Errorf("expected 1 discovery attempt, got %d", lister.calls)
+	}
+	if len(tools) != 1 || tools[0].Name != "stale_tool" {
+		t.Errorf("expected stale fallback tool, got %v", tools)
+	}
+}
+
+func TestResolveTools_ForceRefreshBypassesFreshCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	cache := NewToolCache(tmpDir, "default", DefaultTTL) // fresh
+	if err := cache.Set([]types.ToolDefinition{{Name: "cached_tool"}}); err != nil {
+		t.Fatalf("set cache: %v", err)
+	}
+
+	lister := &successLister{tools: []types.ToolDefinition{{Name: "fresh_tool"}}}
+	setup := NewDynamicRegistrySetup(lister, cache, WithForceRefresh(true))
+
+	tools, err := setup.resolveTools(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lister.calls != 1 {
+		t.Errorf("force refresh should hit server, got %d calls", lister.calls)
+	}
+	if len(tools) != 1 || tools[0].Name != "fresh_tool" {
+		t.Errorf("expected fresh tool, got %v", tools)
+	}
+}
+
+func TestHasRefreshFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"empty", []string{}, false},
+		{"no flag", []string{"workitem.list"}, false},
+		{"bare flag", []string{"--refresh"}, true},
+		{"flag before subcommand", []string{"--refresh", "workitem.list"}, true},
+		{"flag after subcommand", []string{"workitem.list", "--refresh"}, true},
+		{"explicit true", []string{"--refresh=true"}, true},
+		{"explicit false", []string{"--refresh=false"}, false},
+		{"after end-of-flags", []string{"--", "--refresh"}, false},
+		{"substring match", []string{"--name=--refresh"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasRefreshFlag(c.args); got != c.want {
+				t.Errorf("hasRefreshFlag(%v) = %v, want %v", c.args, got, c.want)
+			}
+		})
 	}
 }

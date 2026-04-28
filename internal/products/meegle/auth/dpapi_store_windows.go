@@ -25,11 +25,6 @@ func NewDPAPIStore(profile string) *DPAPIStore {
 	return &DPAPIStore{account: profile}
 }
 
-func (s *DPAPIStore) IsAvailable() bool {
-	// DPAPI is available on all modern Windows versions
-	return true
-}
-
 func (s *DPAPIStore) Load() (*TokenData, error) {
 	val, ok := registryGet(serviceName, s.account)
 	if !ok {
@@ -61,11 +56,7 @@ func (s *DPAPIStore) Clear() error {
 
 // newWindowsStore returns a DPAPI-backed token store on Windows.
 func newWindowsStore(profile string) TokenStore {
-	store := NewDPAPIStore(profile)
-	if store.IsAvailable() {
-		return store
-	}
-	return nil
+	return NewDPAPIStore(profile)
 }
 
 // --- DPAPI helpers ---

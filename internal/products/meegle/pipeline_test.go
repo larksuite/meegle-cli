@@ -805,7 +805,7 @@ func TestNewPipelineFactory(t *testing.T) {
 	}
 	expectedNames := []string{
 		"param_merge",
-		"meegle_validate", "session", "mcp_executor", "batch_executor", "output",
+		"meegle_validate", "session", "mcp_executor", "batch_executor", "attachment_shortcut", "output",
 	}
 	if len(pipe.Steps) != len(expectedNames) {
 		t.Fatalf("expected %d steps, got %d", len(expectedNames), len(pipe.Steps))

@@ -11,10 +11,10 @@
 ### STEP 1 — 定位工作项并提取修改意图
 
 从用户输入中提取：
-- **目标工作项** — URL（直接传入 `url` 参数）、工作项 ID 或名称
+- **目标工作项** — URL、工作项 ID 或名称
 - **修改内容** — 哪些字段要改成什么值
 
-> **URL 注意事项**：强烈建议直接将完整 URL 传入工具的 `url` 参数。**禁止**自己从 URL 截取 `simple_name` 作为 `project_key`（极易匹配到多个同名无权限空间）。如 URL 无法解析出正确的 `project_key`，**必须先调 `project search` 查询**。`work_item_id` 参数必须是字符串类型。
+> **URL 处理**：用户给了 URL 必须先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问。拿到 `simple_name` 和 `work_item_id` 后，必须再调 `project search` 把 `simple_name` 转为权威 `project_key`（同名空间可能有多个）。**禁止**自己从 URL 截取路径段作参数。`work_item_id` 参数必须是字符串类型。
 
 🚨 **获取工作项类型（极重要）**：后续所有查询（字段配置、角色配置等）都强依赖 `work_item_type`。如果用户没有明确告知类型，**必须先调 `workitem get` 获取该实例的真实 `work_item_type`（返回体中的 `work_item_type.key`）**，绝不能猜测为 story 或 issue。
 
@@ -51,6 +51,7 @@
 | `signal` | `"true"` / `"false"` / `"null"` |
 | `workitem_related_select` | 工作项 ID 字符串（数字或字符串按空间配置） |
 | `workitem_related_multi_select` | **stringified** ID 数组，**禁止写入自身 ID**（防循环引用，触发 `exists loop` 报错） |
+| `file` / `multi-file` | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-id <id> --field-key <field_key> <local-path>` 拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
 
 > **用户提供的是工作项名称而非 ID** 时，按主文档 [SKILL.md](../SKILL.md)「关联工作项名称 → ID 转换」完整流程（获取目标约束 → `workitem query` 搜索 → 消歧 → 按类型写入）处理。
 
@@ -86,6 +87,7 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 | 树状多选（`tree-multi-select`） | 纯字符串一维数组 `["id1", "id2"]`，去重 |
 | 关联工作项（`workitem_related_multi_select`） | 旧 ID + 新 ID，去重后写入（只能绑定同空间或白名单空间实例） |
 | 多选人员（`multi-user`） | 旧 userkey + 新 userkey，去重 |
+| 附件（`multi-file`） | 取旧附件数组，把新 +upload 拿到的 `{name,type,size,fileToken}` 拼上去，整体 stringify 写回（`update` 是覆盖语义，不取旧值会丢历史附件） |
 
 **3. 覆盖写入** → 通过 `workitem update` 写入合并后的值
 
@@ -122,7 +124,6 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 
 | 类型 | 原因 |
 |------|------|
-| `file` / `multi-file`（附件） | 需用户在界面手动上传 |
 | `vote-boolean`（轻量表态） | 计数器，只能页面操作 |
 | `vote-option` / `vote-option-multi`（投票） | 不支持接口伪造 |
 | `compound_field` / `multi_user_compound_field`（复合明细表） | API 暂不支持 |

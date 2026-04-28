@@ -57,6 +57,16 @@ func deleteProfile(name string) error {
 	return meegle.DeleteProfile(name)
 }
 
+// invalidateToolCache wipes the per-profile tool cache so the next CLI
+// invocation re-discovers commands. Called after a successful auth login
+// because the new identity may see a different command set than the one
+// cached for the previous (or expired) token. Errors are best-effort:
+// a stale cache only delays the next refresh, it does not break login.
+func invalidateToolCache(profile string) {
+	cache := meegle.NewToolCache(meegle.GetCacheDir(), profile, meegle.DefaultTTL)
+	_ = cache.Clear()
+}
+
 // renderPayload formats data according to the requested mode and returns the
 // output as a string (trailing newline stripped so the caller can use
 // fmt.Println without doubling). Used by auth/config/etc. commands that do

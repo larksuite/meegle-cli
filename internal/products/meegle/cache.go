@@ -62,3 +62,12 @@ func (c *ToolCache) Set(tools []types.ToolDefinition) error {
 	}
 	return os.WriteFile(c.filePath, b, 0600)
 }
+
+// Clear removes the cache file. A missing file is not an error so callers
+// (e.g. `auth login` success) can invalidate unconditionally.
+func (c *ToolCache) Clear() error {
+	if err := os.Remove(c.filePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}

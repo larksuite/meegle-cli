@@ -66,6 +66,10 @@ var fallbackTable = map[string]fallbackEntry{
 
 	// user (1)
 	"search_user_info": {resource: "user", method: "search", description: "Resolve user name/email to user_key"},
+
+	// attachment (2)
+	"upload_file":      {resource: "attachment", method: "prepare-upload", description: "Preprocess an attachment upload — returns the signed URL + multipart plan"},
+	"get_download_url": {resource: "attachment", method: "prepare-download", description: "Preprocess an attachment download — returns the signed URL + multipart plan"},
 }
 
 func MapTool(tool types.ToolDefinition) types.MappedCommand {

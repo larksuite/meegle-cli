@@ -170,6 +170,7 @@ func newLoginCmd() *cobra.Command {
 						if err := tm.SaveToken(result.TokenData); err != nil {
 							return err
 						}
+						invalidateToolCache(profileName)
 						text, err := renderPayload(map[string]any{"status": "ok", "message": "Login successful"}, format)
 						if err != nil {
 							return err
@@ -212,6 +213,7 @@ func newLoginCmd() *cobra.Command {
 				if err := tm.SaveToken(tokenData); err != nil {
 					return err
 				}
+				invalidateToolCache(profileName)
 				text, err := renderPayload(map[string]any{"status": "ok", "message": "Login successful"}, format)
 				if err != nil {
 					return err
@@ -271,6 +273,7 @@ func runInteractiveLogin(ctx context.Context, profileName, hostFlag string, cfg 
 	if err := tm.SaveToken(tokenData); err != nil {
 		return err
 	}
+	invalidateToolCache(profileName)
 
 	fmt.Printf("✓ [%s] Login successful!\n", profileName)
 	printCompletionHint()

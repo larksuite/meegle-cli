@@ -95,8 +95,8 @@ func TestFallbackTable(t *testing.T) {
 }
 
 func TestFallbackTableCount(t *testing.T) {
-	if len(fallbackTable) != 34 {
-		t.Errorf("expected 34 fallback entries, got %d", len(fallbackTable))
+	if len(fallbackTable) != 36 {
+		t.Errorf("expected 36 fallback entries, got %d", len(fallbackTable))
 	}
 }
 

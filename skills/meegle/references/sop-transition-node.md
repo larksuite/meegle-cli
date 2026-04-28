@@ -26,11 +26,11 @@
 ### STEP 1 — 定位工作项
 
 从用户输入中提取 work_item_id 和 project_key：
-- 用户给了 **URL** → 直接传入命令的 `url` 参数自动解析
+- 用户给了 **URL** → 先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问
 - 用户给了 **ID** → 需同时确定 project_key
 - 信息不足时才追问
 
-> **URL 注意事项**：强烈建议直接将完整 URL 传入工具的 `url` 参数。**禁止**自己从 URL 截取 `simple_name` 作为 `project_key`（极易匹配到多个同名无权限空间）。如 URL 无法解析出正确的 `project_key`，**必须先调 `project search` 查询**。`work_item_id` 参数必须是字符串类型。
+> **URL 处理**：decode 返回的 `simple_name` 必须再调 `project search` 转为权威 `project_key`（同名空间可能有多个无权限）。**禁止**自己从 URL 截取路径段作参数。`work_item_id` 参数必须是字符串类型。
 
 ### STEP 2 — 精准查节点
 
@@ -97,11 +97,10 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 | `owners_finished_info` | 负责人完成结论与意见 | 仅各负责人可在页面操作 |
 | `vote-boolean` / `vote-option` / `vote-option-multi` | 投票类 | 仅支持页面交互 |
 | `compound_field` / `multi_user_compound_field` | 复合明细表 | API 暂不支持 |
-| `file` / `multi-file` | 附件 | 需用户在页面上传 |
 | 计算字段 | 系统自动计算 | 只读 |
 
 🚨 遇到硬拦截时输出：
-> "节点流转失败。当前节点【节点名称】设置了必须填写【字段名称】（类型：xxx）才能流转。由于该字段类型不支持自动化补充，请您在 Meego 页面手动填写后，再通知我继续流转。"
+> "节点流转失败。当前节点【节点名称】设置了必须填写【字段名称】（类型：xxx）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。"
 
 **4.3 可补充字段的值转换**
 
@@ -139,6 +138,7 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 | `multi-text` | Markdown 格式字符串 |
 | `date` | 毫秒时间戳字符串，如 `"1722182400000"` |
 | `schedule`（表单字段） | **stringified** `"[开始ms,结束ms]"` |
+| `file` / `multi-file` | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-id <id> --field-key <field_key> <local-path>` 拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
 | `precise_date` | **stringified** `"{\"start_time\":ms,\"end_time\":ms}"` |
 | `telephone` / `email` | 字符串直接传入 |
 | `signal` | `"true"` / `"false"` / `"null"` |

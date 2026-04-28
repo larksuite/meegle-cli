@@ -34,6 +34,7 @@
 | 👥 [团队与用户](#team--user--人员域)               | 列出团队、团队成员、搜索用户、查看当前登录身份                                           |
 | 🗂️ [空间](#project--空间域)                        | 按关键词搜索空间                                                                         |
 | 🔐 [认证与配置](#认证)                             | OAuth 登录、Device Code 流程、多 profile 配置、环境变量注入                              |
+| 🔗 [URL 解析](#url--url-解析)                      | 离线解析飞书项目 / Meegle URL，输出 `url_kind` + 结构化字段                              |
 | 🤖 [Agent Skill](#ai-agent-skill)                  | 内置 skill 供 Trae / Claude Code / Cursor / Windsurf / Gemini / Copilot 使用             |
 
 ## 安装
@@ -242,6 +243,15 @@ Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--
 |------|------|
 | `project search` | 搜索空间信息 |
 
+### attachment — 附件域
+
+| 命令 | 说明 |
+|------|------|
+| `attachment prepare-upload` | 上传预处理 —— 返回带签名的对象存储 URL 与分片计划 |
+| `attachment prepare-download` | 下载预处理 —— 返回带签名的对象存储 URL 与分片计划 |
+| `attachment +upload` | 端到端上传：预处理 + 签名 HTTP POST，返回 `file_token` 与文件元信息 |
+| `attachment +download` | 端到端下载：预处理 + 签名 HTTP GET + 原子写文件，用于消费 `workitem get` / `comment list` 返回的 `file_url` |
+
 ### auth — 认证域
 
 | 命令 | 说明 |
@@ -259,6 +269,14 @@ Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--
 | `config set` | 设置配置项 |
 | `config get` | 读取配置项 |
 | `config profile create\|list\|use\|current\|delete` | 管理多环境 profile |
+
+### url — URL 解析
+
+离线、纯本地的 URL 解析工具，不发起任何网络调用。Skill 或 pipeline 解析飞书项目/Meegle URL 时优先走本命令，拿 `url_kind` 做分支，避免从原始路径猜字段。
+
+| 命令 | 说明 |
+|------|------|
+| `url decode --url <URL>` | 将 URL 解析为 `url_kind` + `simple_name` / `work_item_type` / `work_item_id` / `view_id` / `chart_id` / `query` / `redirected_from` 等字段；未识别的 URL 返回 `url_kind: "unknown"`。 |
 
 ### 其他命令
 
@@ -297,8 +315,8 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 
 `workitem +batch-get` 会对每个 ID 分别调用 `workitem get` 并把结果聚合成一条响应。
 共享 flag（如 `--project-key`）会应用到每一次 per-item 调用上。命令以 `+` 开头，
-表示它是客户端侧的场景/语法糖命令，没有 1:1 对应的 MCP 工具，CLI 会在 `get` 之
-上组合出批量语义。
+表示它是客户端侧的场景/语法糖命令，CLI 在 `get` 之上组合出批量语义，没有对应的
+单一后端接口。
 
 ```bash
 # 在一次调用里传入逗号分隔的多个 ID
@@ -359,6 +377,96 @@ meegle workitem update --work-item-id 12345 \
     {"field_key":"priority","field_value":"P0"}
   ]}'
 ```
+
+### 附件上传 / 下载
+
+`attachment` 域把飞书项目的两段式附件协议拆成两层暴露：
+
+- **基础命令**（`attachment prepare-upload` / `attachment prepare-download`）
+  返回带签名的 URL 预处理结果——适合自己写脚本做 HTTP 传输或调试分片计划。
+- **快捷命令**（`attachment +upload` / `attachment +download`）把基础预处理与
+  签名后的对象存储 HTTP POST/GET 在客户端组合成端到端流程。`+` 前缀表示这是
+  场景命令——CLI 在客户端把预处理输出与字节传输串起来。
+
+`--resource-type` 告诉后端这次上传/下载是给什么场景用：
+
+| `--resource-type` | 用途 |
+|-------------------|------|
+| `15` | 工作项附件字段 |
+| `16` | 工作项富文本字段里的图片 |
+| `13` | 评论附件 |
+| `14` | 评论正文里的图片 |
+
+**上传作用域**：每次上传需要 `--work-item-id` 或 `--work-item-type` 之一。
+**只要工作项已经存在，就优先用 `--work-item-id`**（update / comment 场景）；
+只有创建时带附件这种"工作项还不存在"的场景才用 `--work-item-type`。两者都传时，
+`--work-item-id` 胜出，`--work-item-type` 被静默丢弃。
+
+```bash
+# 为工作项附件字段上传文件 (resource-type 15)
+meegle attachment +upload ./a.pdf \
+  --resource-type 15 \
+  --project-key PROJ --work-item-id 12345 --field-key files_field
+
+# 创建时带附件场景 —— 工作项还不存在，用 --work-item-type
+meegle attachment +upload ./a.pdf \
+  --resource-type 15 \
+  --project-key PROJ --work-item-type story --field-key files_field
+
+# 为富文本字段上传图片 (resource-type 16)
+meegle attachment +upload ./diagram.png \
+  --resource-type 16 \
+  --project-key PROJ --work-item-id 12345 --field-key spec_field
+
+# 为评论上传附件 (resource-type 13)
+meegle attachment +upload ./report.pdf \
+  --resource-type 13 \
+  --project-key PROJ --work-item-id 12345
+
+# 为评论上传图片 (resource-type 14)
+meegle attachment +upload ./screen.png \
+  --resource-type 14 \
+  --project-key PROJ --work-item-id 12345
+
+# 下载：把其他命令响应里的 opaque file_url 直接传进来。
+URL=$(meegle workitem get --project-key PROJ --work-item-id 12345 \
+        --fields files_field --format json \
+      | jq -r '.fields.files_field[0].url')
+meegle attachment +download "$URL" \
+  --project-key PROJ --work-item-id 12345 \
+  --output ./local.pdf --overwrite
+```
+
+`+upload` 输出 JSON 对象，包含 file_token 与文件元信息：
+
+```json
+{
+  "file_token": "...",
+  "file_url": "https://...",
+  "name": "a.pdf",
+  "size": 12345,
+  "mime_type": "application/pdf"
+}
+```
+
+要把结果拼到下游命令里，用 `jq` 或脚本语言提取所需字段：
+
+```bash
+# 评论附件 —— comment add 直接接收 file_token
+TOKEN=$(meegle attachment +upload ./report.pdf --resource-type 13 \
+        --project-key PROJ --work-item-id 12345 | jq -r '.file_token')
+meegle comment add --work-item-id 12345 --content "看附件" --file-token "$TOKEN"
+```
+
+**字段级回灌格式**（拼接 `--fields` 时参考）：
+
+- **工作项附件字段** (`--resource-type 15`) —— `field_value` 是 JSON *字符串*，
+  解析后是 `[{"name","type","size","fileToken"}]`。注意：`fileToken` 是驼峰（其他
+  后端字段都是蛇形），`size` 是字符串不是数字。
+- **富文本字段 / 评论图片** (`--resource-type 16` / `14`) —— 图片用
+  `![name](file_url) <!-- file_token -->` 的 markdown 嵌入。
+- **评论附件** (`--resource-type 13`) —— `comment add --file-token` 直接接收
+  `file_token`。
 
 ### MQL 搜索
 
@@ -428,6 +536,26 @@ meegle workitem create --project-key PROJ --work-item-type story \
   --params '{"fields":[{"field_key":"name","field_value":"标题"}]}'
 ```
 
+#### 从文件读取（`@file.json`）
+
+Windows 上内联 JSON 体验很糟：CMD 必须把 `"` 写成 `\"`，PowerShell 把转义反斜杠传给原生命令时还会再吞一层。给 `--params` 加 `@` 前缀即可改为从文件读取，macOS、Linux、Windows 各种 shell 都能一致工作：
+
+```bash
+# body.json:
+# {"fields":[{"field_key":"name","field_value":"优化登录流程"}]}
+
+meegle workitem create --project-key PROJ --work-item-type story \
+  --params @body.json
+
+# 绝对路径同样支持
+meegle workitem update --work-item-id 12345 --params @/tmp/patch.json
+
+# PowerShell 用法相同，无需任何转义
+meegle workitem create --project-key PROJ --work-item-type story --params '@body.json'
+```
+
+读取走系统默认编码，相对路径与绝对路径都接受。文件不存在会返回 `PARAM_INVALID`；文件内容不是合法 JSON 会返回 `INVALID_PARAMS_JSON`。
+
 ### 优先级
 
 当 `--set`、`--params` 和普通 flag 同时使用时：
@@ -459,10 +587,11 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--format` | `-o` | 输出格式：`json`（默认）、`table`、`ndjson`、`raw` |
 | `--select` | | 字段投影（支持 dot path） |
 | `--set` | | 设置嵌套参数（可重复） |
-| `--params` | `-P` | 完整 JSON 参数体 |
+| `--params` | `-P` | 完整 JSON 参数体；以 `@` 开头改为从文件读取（如 `--params @body.json`） |
 | `--dry-run` | | 只渲染请求，不实际执行 |
 | `--verbose` | `-v` | 详细输出 |
 | `--profile` | | 指定配置 profile |
+| `--refresh` | | 从服务端刷新本地命令缓存（旁路 24 小时缓存） |
 
 ## 进阶用法
 
@@ -594,7 +723,7 @@ meegle config get host
 export MEEGLE_HOST=project.feishu.cn
 export MEEGLE_USER_ACCESS_TOKEN=<your-user-token>
 export MEEGLE_USER_AGENT=ci-runner  # 可选；追加到 User-Agent，优先级高于 config.user_agent
-meegle workitem get-brief --work_item_id 123
+meegle workitem get --work-item-id 123
 ```
 
 任一变量可以单独设置。走这个路径时 CLI 不访问 keychain，401 错误不会自动 refresh，由调用方自行轮转。

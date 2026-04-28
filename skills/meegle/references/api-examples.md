@@ -145,7 +145,7 @@ meegle workflow list-state-transitions --work-item-id 工作项ID --work-item-ty
 
 ### comment add
 ```bash
-meegle comment add --work-item-id 工作项ID --comment-content '评论内容' --project-key {{project_key}} --format json
+meegle comment add --work-item-id 工作项ID --content '评论内容' --project-key {{project_key}} --format json
 ```
 
 ### comment list

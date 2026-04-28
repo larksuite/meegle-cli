@@ -27,6 +27,8 @@ description: |
 
 ## WorkItem 工作项域
 
+> 元数据查询命令（`workitem meta-types` / `workitem meta-fields` / `workitem meta-roles` / `workitem meta-create-fields`）的参数表见 [references/workitem.md](references/workitem.md)。
+
 ### workitem create
 创建工作项实例。**务必先用 `workitem meta-fields` 获取字段信息，`workitem meta-roles` 获取角色信息。模板 ID 是必填项。**
 
@@ -89,46 +91,17 @@ description: |
 | --project-key | string | 是 | 空间 key |
 | --work-item-id | string | 是 | 工作项 ID |
 
-### workitem meta-types
-获取指定空间下所有工作项类型列表。用户描述模糊时用此命令确认合法 type_key。
+---
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 projectKey |
+## Attachment 附件域
 
-### workitem meta-fields
-获取指定空间和工作项类型的可用字段配置（不含禁用字段和角色配置）。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-type | string | 是 | 工作项类型 key 或名称 |
-| --page-num | number | 是 | 页数，每页 50 条，从 1 开始 |
-| --field-keys | array | 否 | 精确匹配字段 key 或名称 |
-| --field-query | string | 否 | 模糊查询字段 key 和名称 |
-| --field-types | array | 否 | 按字段类型筛选 |
-
-### workitem meta-roles
-获取指定工作项类型的角色列表。用于查询/创建/更新工作项前确认合法 role_key。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-type | string | 是 | 工作项类型 key 或名称 |
-| --page-num | number | 是 | 页数，每页 50 条，从 1 开始 |
-| --role-keys | array | 否 | 精确匹配角色 key 或名称 |
-| --role-query | string | 否 | 模糊查询角色 key 和名称 |
-
-### workitem meta-create-fields
-查看创建工作项时可用的字段及类型。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
+附件上传/下载分两步：先调 `attachment prepare-upload` / `attachment prepare-download` 申请带签名的对象存储 URL，再与对象存储做 HTTP 直连。Meegle CLI 提供 `attachment +upload` / `attachment +download` 一键封装。详细参数表与流程说明见 [references/attachment.md](references/attachment.md)。
 
 ---
 
 ## WorkFlow 工作流域
+
+> 流转辅助命令（`workflow list-state-transitions` / `workflow list-state-required` / `workflow meta-node-fields`）的参数表见 [references/workflow.md](references/workflow.md)。
 
 ### workflow transition
 仅用于节点流工作项，操作节点完成流转或回滚。
@@ -176,34 +149,6 @@ description: |
 | --fields | array | 否 | 节点自定义字段，每项含 `field_key` 和 `field_value`（STRING 协议，见「字段值格式」） |
 | --project-key | string | 否 | 空间 key |
 
-### workflow list-state-transitions
-查看工作项可流转的状态列表。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-id | string | 是 | 工作项 ID |
-| --work-item-type | string | 是 | 工作项类型 |
-| --user-key | string | 是 | 用户标识 |
-
-### workflow list-state-required
-查看流转所需的必填信息（节点流传 node_key，状态流传 state_key）。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-id | string | 是 | 工作项 ID |
-| --state-key | string | 是 | 节点流的 node_key 或状态流的 state_key |
-| --mode | string | 否 | 默认查所有必填项；传 `unfinished` 仅查未完成必填项 |
-
-### workflow meta-node-fields
-查看节点字段配置。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-type | string | 是 | 工作项类型 |
-
 ---
 
 ## MyWork 工作台域
@@ -223,6 +168,8 @@ description: |
 
 ## WorkHour 工时域
 
+> 工时记录查询（`workhour list-records`）的参数表见 [references/misc.md](references/misc.md)。
+
 ### workhour list-schedule
 获取指定人员在时间区间内的排期与工作量明细。
 
@@ -236,18 +183,11 @@ description: |
 
 **调用约束**：每次最多 20 人（多人拆批次并行）；单次跨度 ≤ 3 个月（超出按月拆分）；所有批次完成后再汇总，未完整获取前不得输出结论。
 
-### workhour list-records
-查看工作项的工时登记记录。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-type | string | 是 | 工作项类型 |
-| --work-item-id | string | 是 | 工作项 ID |
-
 ---
 
 ## UserGroup 人员域
+
+> 团队相关命令（`team list` / `team list-members`）的参数表见 [references/misc.md](references/misc.md)。
 
 ### user search
 批量查询用户基础信息。用于将姓名/邮箱转换为 userkey。
@@ -262,24 +202,11 @@ description: |
 
 > **MQL 中**可直接用 `current_login_user()` 函数，无需提前获取用户信息。如需获取当前用户的 userkey/姓名等详细信息，可用 `user search` 传入 `current_login_user()` 作为参数。
 
-### team list
-查看空间下的团队列表。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 否 | 空间 key |
-
-### team list-members
-查看团队成员列表。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --team-id | string | 是 | 团队 ID |
-
 ---
 
 ## View 视图域
+
+> 视图搜索与固定视图管理（`view search` / `view create-fixed` / `view update-fixed`）的参数表见 [references/view.md](references/view.md)。
 
 ### view get
 根据视图 ID 获取该视图下的工作项列表。
@@ -291,56 +218,11 @@ description: |
 | --page-num | number | 否 | 分页页数起点 |
 | --fields | array | 否 | 要查询的字段 |
 
-### view search
-按名称搜索视图。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --view-scope | string | 是 | 视图范围 |
-| --key-word | string | 是 | 关键词 |
-
-### view create-fixed
-创建固定视图。上限 200 个工作项。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --name | string | 是 | 视图名称 |
-| --work-item-type | string | 是 | 工作项类型 |
-| --work-item-id-list | array | 是 | 工作项 ID 列表 |
-
-### view update-fixed
-更新固定视图。add/remove_work_item_ids 二选一。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --view-id | string | 是 | 视图 ID |
-| --work-item-type | string | 是 | 工作项类型 |
-
----
-
-## Chart 度量域
-
-### chart get
-查看图表详情。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --chart-id | string | 是 | 图表 ID |
-
-### chart list
-查看视图下的图表列表。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --view-id | string | 是 | 视图 ID |
-
 ---
 
 ## Comment 评论域
+
+> 评论列表查询（`comment list`）的参数表见 [references/misc.md](references/misc.md)。
 
 ### comment add
 添加评论。支持富文本 Markdown，语法详见 [references/rich-text-editor-markdown-syntax.md](references/rich-text-editor-markdown-syntax.md)（含 @提及、对齐、链接预览、字号/颜色等扩展语法）。
@@ -348,52 +230,17 @@ description: |
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | --work-item-id | string | 是 | 工作项 ID |
-| --comment-content | string | 是 | 评论内容 |
-
-### comment list
-查看评论列表。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-id | string | 是 | 工作项 ID |
+| --content | string | 是 | 评论内容 |
 
 ---
 
-## SubTask 子任务域
+## 其它低频域
 
-### subtask update
-创建/修改/完成/回滚子任务。
+度量图表、子任务、关系定义查询的命令参数表见 [references/misc.md](references/misc.md)：
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --node-id | string | 是 | 节点 ID |
-| --work-item-id | string | 是 | 工作项 ID |
-| --action | string | 是 | create/update/confirm/rollback |
-
----
-
-## Relation 关系域
-
-### relation list
-查看关联的工作项列表。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
-| --work-item-id | string | 是 | 工作项 ID |
-| --relation-field-key | string | 否 | 关联关系字段 key，从 `relation meta-definitions` 获取 |
-| --relation-id | string | 否 | 关联关系 ID，从 `relation meta-definitions` 获取 |
-| --node-id | string | 否 | 节点 ID，查询某节点下的关联时传入 |
-| --page-num | number | 否 | 分页页码，从 1 开始 |
-| --page-size | number | 否 | 每页数量，最大 50 |
-
-### relation meta-definitions
-查看空间下的关联关系定义。
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| --project-key | string | 是 | 空间 key |
+- **Chart 度量域** — `chart get` / `chart list`
+- **SubTask 子任务域** — `subtask update`（create/update/confirm/rollback）
+- **Relation 关系域** — `relation list` / `relation meta-definitions`
 
 ---
 
@@ -449,9 +296,9 @@ description: |
 
 收到用户输入后依次执行：
 
-1. **参数提取**：从自然语言中提取空间名、工作项类型、时间、人员、筛选条件；含 URL 时直传 `url` 参数并跳过参数确认。注意区分空间名与筛选维度（如「XX空间下YY业务线的缺陷」中 XX 才是空间名）。
+1. **参数提取**：从自然语言中提取空间名、工作项类型、时间、人员、筛选条件；含 URL 时先调 `url decode` 解析，按 [references/url-kinds.md](references/url-kinds.md) 的 `url_kind` 分支决定进入哪个 SOP 或拒绝。**禁止**自己从 URL 截取路径段作参数。注意区分空间名与筛选维度（如「XX空间下YY业务线的缺陷」中 XX 才是空间名）。
 
-2. **参数确认**（禁止猜测）：用探测命令校验空间（`project search`）、类型（`workitem meta-types`）、人员（`user search`）。**探测结果不唯一时必须展示并询问用户**，禁止自行选择；缺失必填合并为一条消息询问。个人待办（`mywork todo`）和 URL 直接操作可跳过。
+2. **参数确认**（禁止猜测）：用探测命令校验空间（`project search`）、类型（`workitem meta-types`）、人员（`user search`）。**探测结果不唯一时必须展示并询问用户**，禁止自行选择；缺失必填合并为一条消息询问。个人待办（`mywork todo`）可跳过；URL 经 `url decode` 拿到 `simple_name` 后仍需 `project search` 转权威 `project_key`（同名空间可能有多个无权限）。
 
 3. **元数据收集**（无需用户参与）：调用 `workitem meta-fields` 获取字段定义（需要特定字段用 `field_keys`，模糊查询用 `field_query`）；涉及角色时并行调 `workitem meta-roles`。关键字段识别：状态字段 type=`_work_item_status`（含「完成/关闭/终止」的值为完成态）、排期字段 type=`schedule`（MQL 用 `__字段名_开始时间` / `__字段名_结束时间`）、优先级字段 key=`priority`。简单直调场景（仅需 project_key + work_item_id，如 `comment add`）可跳过本步。
 
@@ -469,33 +316,7 @@ description: |
 - 空间未找到（`project search` 连续 3 次失败）
 - Permission Denied（当前用户对该空间无访问权限）
 
-**自愈规则**（按报错特征匹配修复后重试）：
-
-| 报错特征 | 自愈动作 |
-|---------|---------|
-| `need STRING type, but got: LIST` / `MAP` | field_value 从原生 JSON 改为 JSON.stringify 后的字符串（见「字段值格式」） |
-| `cannot unmarshal object...` | 仅改变格式（数字↔字符串、单值↔数组、对象↔纯字符串），值不变 |
-| `不满足层级配置`（级联层级错误） | 查 `children` 树，展示末级叶子节点让用户选择 |
-| `invalid select option(s)`（枚举不合法） | 从 `possible values` 匹配；唯一匹配则修正重试，否则询问用户 |
-
-**错误速查**：
-
-| 现象 | 排查/修复 |
-|------|---------|
-| 找不到空间 / 中文名匹配多个空间 | `project search` 验证，取 project_key 精确调用 |
-| 找不到工作项类型 | `workitem meta-types` 确认合法 type_key |
-| 字段名错误 / MQL 返回为空但数据存在 | `workitem meta-fields` 确认字段 key 与类型 |
-| MQL 查询失败 | FROM 用 `` `空间名`.`工作项类型` ``；数组字段改用 `array_contains` / `any_match` |
-| 日期区间字段查询失败 | 用子字段 `` `__字段名_开始时间` `` |
-| 角色查询无结果 | MQL 角色名用 `` `__{角色名}` `` 格式 |
-| 人名/团队名重复 | MQL 用 `<id:xxxx>` 消歧（见 MQL 语法参考） |
-| 人名→userkey 失败 | `user search` 批量查询 |
-| 人员字段写入失败 | user 传单个 userkey 字符串；multi-user 必须 stringified 如 `"[\"k1\",\"k2\"]"` |
-| node not found | 先 `workitem get` 获取真实 node_id，禁止猜测 |
-| 节点流转失败 | 节点流用 `workflow transition`；状态流用 `workflow transition-state`（先 `workflow list-state-transitions` 取 transition_id，再 `workflow list-state-required` 查必填项） |
-| 创建工作项缺少模板 | `workitem meta-fields(field_keys=["template"])` 获取 |
-| 角色更新失败 | 改用 `workitem update` 的 `role_operate` 参数（不走 fields） |
-| mywork.todo 需选择工作区 | 按报错中的列表把 `asset_key`（Asset_xxx）传入重试 |
+详细自愈规则与错误速查表（涵盖字段格式、节点流转、人员转换等常见报错）见 [references/error-handling.md](references/error-handling.md)。
 
 ---
 

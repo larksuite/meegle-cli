@@ -6,6 +6,7 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -31,7 +32,11 @@ func MergeStructuredParams(flags map[string]any, explicit map[string]any) (map[s
 	}
 	merged := make(map[string]any)
 	if rawParams, ok := flags["params"].(string); ok && strings.TrimSpace(rawParams) != "" {
-		if err := json.Unmarshal([]byte(rawParams), &merged); err != nil {
+		payload, err := resolveParamsPayload(rawParams)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payload, &merged); err != nil {
 			return nil, frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeInvalidParams, fmt.Sprintf("--params is not valid JSON: %v", err))
 		}
 	}
@@ -54,6 +59,26 @@ func MergeStructuredParams(flags map[string]any, explicit map[string]any) (map[s
 	delete(flags, "params")
 	delete(flags, "set")
 	return flags, nil
+}
+
+// resolveParamsPayload returns the JSON bytes that --params should be parsed
+// from. When raw starts with '@', the remainder is treated as a file path and
+// the file contents are returned — sidestepping shell quoting differences
+// (CMD vs PowerShell vs bash) that make embedded JSON painful on Windows.
+// Otherwise the input is returned unchanged.
+func resolveParamsPayload(raw string) ([]byte, error) {
+	if !strings.HasPrefix(raw, "@") {
+		return []byte(raw), nil
+	}
+	path := strings.TrimPrefix(raw, "@")
+	if strings.TrimSpace(path) == "" {
+		return nil, frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamInvalid, "--params @<path> requires a non-empty file path")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamInvalid, fmt.Sprintf("--params cannot read file %q: %v", path, err))
+	}
+	return data, nil
 }
 
 func parseSetKV(item string) ([]string, string, error) {

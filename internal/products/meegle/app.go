@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,30 @@ var MeegleGlobalFlags = []registry.FlagDef{
 		Type:        registry.FlagTypeString,
 		Description: "Specify the configuration profile name",
 	},
+	{
+		Name:        "refresh",
+		Type:        registry.FlagTypeBool,
+		Description: "Refresh cached commands from server",
+	},
+}
+
+// hasRefreshFlag scans raw argv for the --refresh boolean flag before cobra
+// parses. We need it pre-parse because the command tree is built (and the
+// cache lookup happens) inside Setup, which runs before flag parsing.
+//
+// Recognised forms: "--refresh", "--refresh=true". Anything after the "--"
+// end-of-flags marker is ignored so a positional that happens to be the
+// literal cannot trigger a refresh.
+func hasRefreshFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == "--refresh" || a == "--refresh=true" {
+			return true
+		}
+	}
+	return false
 }
 
 // StaticCommands allows external callers (cmd/meegle) to inject static subcommands, avoiding circular imports.
@@ -36,6 +61,7 @@ type StaticCommands struct {
 	Config     *cobra.Command
 	Inspect    *cobra.Command
 	Completion *cobra.Command
+	URL        *cobra.Command
 }
 
 // NewCLIApp assembles the meegle CLI application, injecting the four customization points.
@@ -56,11 +82,15 @@ func NewCLIApp(version string, staticCmds *StaticCommands) (*cliapp.App, error) 
 	if client != nil {
 		lister = client
 	}
+	// Pre-scan argv: cobra hasn't parsed yet but resolveTools needs to know
+	// whether to bypass the cache before the command tree is built.
+	forceRefresh := hasRefreshFlag(os.Args[1:])
 	registrySetup := NewDynamicRegistrySetup(
 		lister, cache,
 		WithGlobalFlags(MeegleGlobalFlags),
 		WithTokenManager(ident.TokenManager),
 		WithIdentitySource(ident.Source),
+		WithForceRefresh(forceRefresh),
 	)
 
 	// 5. Placeholder executor (pipeline already contains McpExecutorStep; this is just a fallback)
@@ -141,6 +171,9 @@ Typical Workflows:
 			}
 			if staticCmds.Completion != nil {
 				root.AddCommand(staticCmds.Completion)
+			}
+			if staticCmds.URL != nil {
+				root.AddCommand(staticCmds.URL)
 			}
 		}
 		// When not logged in — or the active token was rejected by the server —

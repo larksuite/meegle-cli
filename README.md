@@ -34,6 +34,7 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 | 👥 [Team & User](#team--user--people)              | List teams, team members, search users, view current login                                     |
 | 🗂️ [Projects](#project--projects)                  | Search projects by keyword                                                                     |
 | 🔐 [Auth & Config](#authentication)                | OAuth login, device-code flow, multi-profile config, env-var injection                         |
+| 🔗 [URL Parsing](#url--url-parsing)                | Offline decode of Meegle / Feishu Project URLs into `url_kind` + structured fields             |
 | 🤖 [Agent Skill](#ai-agent-skill)                  | Pre-built skill for Trae / Claude Code / Cursor / Windsurf / Gemini CLI / Copilot              |
 
 ## Installation
@@ -242,6 +243,15 @@ The agent consults the skill, picks the right `meegle` commands, and runs them f
 |---------|-------------|
 | `project search` | Search projects |
 
+### attachment — Attachments
+
+| Command | Description |
+|---------|-------------|
+| `attachment prepare-upload` | Upload preprocess — returns the signed object-storage URL and multipart plan |
+| `attachment prepare-download` | Download preprocess — returns the signed object-storage URL and multipart plan |
+| `attachment +upload` | End-to-end upload: preprocess + signed HTTP POST(s); returns the resulting `file_token` and file metadata |
+| `attachment +download` | End-to-end download: preprocess + signed HTTP GET(s) + atomic write — for `file_url`s embedded in `workitem get` / `comment list` responses |
+
 ### auth — Authentication
 
 | Command | Description |
@@ -259,6 +269,14 @@ The agent consults the skill, picks the right `meegle` commands, and runs them f
 | `config set` | Set a configuration value |
 | `config get` | Get a configuration value |
 | `config profile create\|list\|use\|current\|delete` | Manage configuration profiles |
+
+### url — URL Parsing
+
+Offline, no-network utility for parsing Meegle / Feishu Project URLs into structured fields. Skills and pipelines branch on the returned `url_kind` instead of guessing from raw paths.
+
+| Command | Description |
+|---------|-------------|
+| `url decode --url <URL>` | Decode a URL into `url_kind` + `simple_name` / `work_item_type` / `work_item_id` / `view_id` / `chart_id` / `query` / `redirected_from` etc. Unrecognised URLs return `url_kind: "unknown"`. |
 
 ### Other Commands
 
@@ -297,8 +315,9 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 
 `workitem +batch-get` fans out to `workitem get` for each ID and aggregates the
 results into one response. Shared flags (e.g. `--project-key`) apply to every
-per-item call. The `+` prefix marks it as a scenario/sugar command with no 1:1
-MCP tool behind it — the CLI composes multiple `get` calls client-side.
+per-item call. The `+` prefix marks it as a scenario/sugar command — the CLI
+composes multiple `get` calls client-side instead of mapping to a single
+backend endpoint.
 
 ```bash
 # Comma-separated IDs in one invocation
@@ -360,6 +379,102 @@ meegle workitem update --work-item-id 12345 \
     {"field_key":"priority","field_value":"P0"}
   ]}'
 ```
+
+### Attachments
+
+The `attachment` domain exposes Lark project's two-stage attachment protocol
+in two layers:
+
+- **Basic commands** (`attachment prepare-upload`, `attachment prepare-download`)
+  return the raw signed-URL preprocess payload — handy for scripting your own
+  HTTP transfer or inspecting the multipart plan.
+- **Shortcuts** (`attachment +upload`, `attachment +download`) chain the basic
+  preprocess with the signed HTTP POST/GET to object storage end-to-end. The
+  `+` prefix marks them as scenario commands — the CLI orchestrates the
+  preprocess output plus the out-of-band byte transfer client-side.
+
+`--resource-type` tells the backend what the file will be attached to:
+
+| `--resource-type` | Target |
+|-------------------|--------|
+| `15` | Workitem attachment field |
+| `16` | Image embedded in a workitem rich-text field |
+| `13` | Attachment on a comment |
+| `14` | Image embedded in a comment |
+
+**Scoping the preprocess**: every upload needs either `--work-item-id` or
+`--work-item-type`. **Always prefer `--work-item-id`** when the target workitem
+exists (update / comment scenarios); only use `--work-item-type` for the
+create-with-attachment path where the workitem hasn't been created yet. If
+both are supplied, `--work-item-id` wins and `--work-item-type` is ignored.
+
+```bash
+# Upload a file for a workitem attachment field (resource-type 15)
+meegle attachment +upload ./a.pdf \
+  --resource-type 15 \
+  --project-key PROJ --work-item-id 12345 --field-key files_field
+
+# Create-with-attachment path — workitem doesn't exist yet, pass --work-item-type
+meegle attachment +upload ./a.pdf \
+  --resource-type 15 \
+  --project-key PROJ --work-item-type story --field-key files_field
+
+# Upload an image for a rich-text field (resource-type 16)
+meegle attachment +upload ./diagram.png \
+  --resource-type 16 \
+  --project-key PROJ --work-item-id 12345 --field-key spec_field
+
+# Upload a comment attachment (resource-type 13)
+meegle attachment +upload ./report.pdf \
+  --resource-type 13 \
+  --project-key PROJ --work-item-id 12345
+
+# Upload a comment image (resource-type 14)
+meegle attachment +upload ./screen.png \
+  --resource-type 14 \
+  --project-key PROJ --work-item-id 12345
+
+# Download: pass the opaque file_url from another command's response.
+URL=$(meegle workitem get --project-key PROJ --work-item-id 12345 \
+        --fields files_field --format json \
+      | jq -r '.fields.files_field[0].url')
+meegle attachment +download "$URL" \
+  --project-key PROJ --work-item-id 12345 \
+  --output ./local.pdf --overwrite
+```
+
+`+upload` returns a JSON object with the file token and metadata:
+
+```json
+{
+  "file_token": "...",
+  "file_url": "https://...",
+  "name": "a.pdf",
+  "size": 12345,
+  "mime_type": "application/pdf"
+}
+```
+
+To wire the result into a downstream command, parse the response with `jq`
+or your scripting language of choice:
+
+```bash
+# Comment attachment — comment add takes file_token directly
+TOKEN=$(meegle attachment +upload ./report.pdf --resource-type 13 \
+        --project-key PROJ --work-item-id 12345 | jq -r '.file_token')
+meegle comment add --work-item-id 12345 --content "See attached" --file-token "$TOKEN"
+```
+
+**Field-level attachment formats** (how to assemble `--fields` payloads):
+
+- **Workitem attachment field** (`--resource-type 15`) — `field_value` is a
+  JSON *string* whose parsed form is `[{"name","type","size","fileToken"}]`.
+  Note: `fileToken` is camelCase (other backend fields are snake_case) and
+  `size` is a string, not a number.
+- **Rich-text field / comment image** (`--resource-type 16` / `14`) — embed
+  images as `![name](file_url) <!-- file_token -->`.
+- **Comment attachment** (`--resource-type 13`) — `comment add --file-token`
+  takes `file_token` directly.
 
 ### MQL Search
 
@@ -429,6 +544,31 @@ meegle workitem create --project-key PROJ --work-item-type story \
   --params '{"fields":[{"field_key":"name","field_value":"Title"}]}'
 ```
 
+#### Reading from a file (`@file.json`)
+
+Inline JSON is unergonomic on Windows because CMD requires `\"` escaping
+and PowerShell mangles backslashes when forwarding native-command arguments.
+Prefix the value with `@` to load the JSON from a file instead — works
+identically on macOS, Linux, and Windows shells:
+
+```bash
+# body.json:
+# {"fields":[{"field_key":"name","field_value":"Optimize login flow"}]}
+
+meegle workitem create --project-key PROJ --work-item-type story \
+  --params @body.json
+
+# Absolute path also works
+meegle workitem update --work-item-id 12345 --params @/tmp/patch.json
+
+# PowerShell — same syntax, no escaping headaches
+meegle workitem create --project-key PROJ --work-item-type story --params '@body.json'
+```
+
+The path is read with the OS's default encoding; both relative and absolute
+paths are accepted. A missing file fails with `PARAM_INVALID`; a file whose
+contents are not valid JSON fails with `INVALID_PARAMS_JSON`.
+
 ### Priority
 
 When `--set`, `--params`, and regular flags are used together:
@@ -460,10 +600,11 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--format` | `-o` | Output format: `json` (default), `table`, `ndjson`, `raw` |
 | `--select` | | Field projection with dot paths |
 | `--set` | | Set nested parameters (repeatable) |
-| `--params` | `-P` | Full JSON parameter body |
+| `--params` | `-P` | Full JSON parameter body; prefix with `@` to read from a file (e.g. `--params @body.json`) |
 | `--dry-run` | | Render request without executing |
 | `--verbose` | `-v` | Verbose output |
 | `--profile` | | Use a specific configuration profile |
+| `--refresh` | | Refresh cached commands from server (bypass the local 24 h cache) |
 
 ## Advanced Usage
 
@@ -604,7 +745,7 @@ Two well-known environment variables are read directly at CLI startup and overri
 export MEEGLE_HOST=project.feishu.cn
 export MEEGLE_USER_ACCESS_TOKEN=<your-user-token>
 export MEEGLE_USER_AGENT=ci-runner  # optional; appended to User-Agent, highest priority over config.user_agent
-meegle workitem get-brief --work_item_id 123
+meegle workitem get --work-item-id 123
 ```
 
 Either variable may be set independently. When this path is taken, the CLI bypasses the keychain and does not attempt to refresh on 401 — the caller is responsible for rotating the env value.

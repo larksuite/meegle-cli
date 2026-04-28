@@ -20,6 +20,7 @@ meegle <resource> <method> [flags] --format json
 | `--select <props>` | 选取输出属性，逗号分隔（支持 dot path，如 `name,owner.name`） |
 | `--profile <name>` | 临时切换 profile |
 | `--verbose` | 显示详细日志 |
+| `--refresh` | 从服务端刷新本地命令缓存（旁路 24h cache） |
 
 ## 参数传递
 
@@ -40,6 +41,11 @@ CLI 的命令和参数会随版本更新。遇到不确定的命令或参数时�
 meegle inspect                    # 列出所有可用命令
 meegle inspect workitem.create    # 查看具体命令的参数 schema
 ```
+
+> 命令清单本地缓存 24 小时。如果 `inspect` 输出的参数与服务端实际不符，或服务端有新命令但 CLI 报 `unknown command`，加上 `--refresh` 强制从服务端重新拉取最新清单：
+> ```bash
+> meegle --refresh inspect workitem.create
+> ```
 
 ## 输出处理
 

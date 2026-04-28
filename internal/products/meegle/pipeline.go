@@ -137,8 +137,22 @@ func (s *MeegleValidateStep) Execute(ctx context.Context, state *pipeline.Pipeli
 			if _, ok := state.Values[flag.Name]; !ok {
 				return meerrors.NewClientError("CLIENT_MISSING_REQUIRED",
 					fmt.Sprintf("missing required parameter: --%s", flag.Name)).
-					WithSuggestion(fmt.Sprintf("meegle inspect %s", state.Parsed.Node.FullPathString()))
+					WithSuggestion(fmt.Sprintf("meegle %s --help", state.Parsed.Node.FullPathString()))
 			}
+		}
+	}
+	// Required positional args (ArgDef.Required) — cobra defaults to
+	// ArbitraryArgs which doesn't enforce arity, so commands using positional
+	// args (e.g. attachment +upload-entire <source-path>) need this check
+	// before the step layer opens files or hits the network.
+	for index, arg := range state.Parsed.Node.Args {
+		if !arg.Required {
+			continue
+		}
+		if index >= len(state.Parsed.Args) {
+			return meerrors.NewClientError("CLIENT_MISSING_REQUIRED",
+				fmt.Sprintf("missing required argument <%s>", arg.Name)).
+				WithSuggestion(fmt.Sprintf("meegle %s --help", state.Parsed.Node.FullPathString()))
 		}
 	}
 	// Enum validation for persistent/inherited flags (e.g. --format).
@@ -184,6 +198,14 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 	}
 	// Batch commands are handled by BatchExecutorStep.
 	if state.Parsed.Node.Meta.Tags[TagMcpBatch] == "1" {
+		return nil
+	}
+	// Attachment shortcut commands are handled by AttachmentShortcutStep.
+	// They inherit their HandlerRef from the MCP-discovered prepare-* sibling
+	// (see attachment_register.go::injectAttachmentCommands), so we gate on
+	// TagAttachmentShortcut here to stop the shared HandlerRef from re-firing
+	// the basic MCP path.
+	if state.Parsed.Node.Meta.Tags[TagAttachmentShortcut] != "" {
 		return nil
 	}
 	toolName := state.Parsed.Node.HandlerRef
@@ -342,6 +364,7 @@ func newPipelineFactory(setup *DynamicRegistrySetup) cliapp.PipelineFactory {
 			&SessionStep{},
 			&McpExecutorStep{CommandsFunc: setup.MappedCommands},
 			&BatchExecutorStep{CommandsFunc: setup.MappedCommands},
+			&AttachmentShortcutStep{},
 			&pipeline.OutputStep{Processor: meegleOutputProcessor()},
 		}}, nil
 	}

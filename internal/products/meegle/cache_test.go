@@ -79,3 +79,29 @@ func TestCachePerProfile(t *testing.T) {
 		t.Error("beta cache corrupted")
 	}
 }
+
+func TestCacheClearRemovesFile(t *testing.T) {
+	dir := t.TempDir()
+	cache := NewToolCache(dir, "default", DefaultTTL)
+	if err := cache.Set([]types.ToolDefinition{{Name: "x"}}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := cache.Clear(); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	result, _ := cache.Get()
+	if result != nil {
+		t.Errorf("expected nil after Clear, got %v", result)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tools.json")); !os.IsNotExist(err) {
+		t.Errorf("expected file removed, stat err = %v", err)
+	}
+}
+
+func TestCacheClearMissingIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	cache := NewToolCache(dir, "default", DefaultTTL)
+	if err := cache.Clear(); err != nil {
+		t.Errorf("clear on missing file should be no-op, got %v", err)
+	}
+}

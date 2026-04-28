@@ -28,24 +28,26 @@ func CreateTokenStore(profile string) TokenStore {
 	return tokenStoreFactory(profile)
 }
 
+// defaultTokenStoreFactory returns a FallbackStore that prefers the OS-native
+// credential store and transparently falls back to an encrypted file when the
+// native store rejects the operation at runtime (sandboxed macOS, locked
+// keychain over SSH, headless Linux without a secret-service daemon, etc.).
+// Trying the primary on first use — instead of probing it ahead of time —
+// avoids leaving sentinel entries in the user's keychain just to determine
+// availability.
 func defaultTokenStoreFactory(profile string) TokenStore {
+	file := NewFileStore("", profile)
 	switch runtime.GOOS {
 	case "darwin":
-		store := NewKeychainStore(profile)
-		if store.IsAvailable() {
-			return store
-		}
+		return NewFallbackStore(NewKeychainStore(profile), file)
 	case "linux":
-		store := NewSecretToolStore(profile)
-		if store.IsAvailable() {
-			return store
-		}
+		return NewFallbackStore(NewSecretToolStore(profile), file)
 	case "windows":
-		if store := newWindowsStore(profile); store != nil {
-			return store
+		if win := newWindowsStore(profile); win != nil {
+			return NewFallbackStore(win, file)
 		}
 	}
-	return NewFileStore("", profile)
+	return file
 }
 
 // SetTokenStoreFactory replaces the TokenStore constructor used by

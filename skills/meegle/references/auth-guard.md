@@ -4,12 +4,14 @@
 
 - **主动登录**：用户说"登录 Meegle"、"连接飞书项目"、"login meegle"等。
 - **被动拦截**：用户请求任何 Meegle 业务操作（查询待办、查工作项、创建任务等），优先执行 Auth Guard。
-- **URL 触发**：用户发送了飞书项目/Meegle 工作项 URL（路径中包含 `workitem`、`detail`、`story`、`issue` 等关键词）。处理流程：
-  1. 从 URL 提取 `$host`（域名部分）和可能的 `$project_key`、`$work_item_id`
-  2. 执行 Auth Guard
-  3. 登录成功后：
-     - 如果解析出了 `$project_key` 和 `$work_item_id` → 直接执行 `workitem get` 查询详情
-     - 如果无法解析 → 告知用户已登录成功，请描述需要查询的内容
+- **URL 触发**：用户发送了飞书项目/Meegle URL。处理流程：
+  1. 先调 `url decode` 拿到结构化字段（`url_kind`、`host`、`simple_name`、`work_item_id` 等）。**禁止**自己从 URL 截取路径段作参数。字段含义与 kind 分支见 [url-kinds.md](./url-kinds.md)。
+  2. 保存 `$host` = response.host、`$url_kind`、`$simple_name`、`$work_item_id`。
+  3. 执行 Auth Guard（下面的 STEP 1 起）。
+  4. 登录成功后按 `$url_kind` 分支：
+     - `workitem_detail` → `project search` 得权威 `$project_key`，再 `workitem get` 查询详情
+     - `workitem_homepage` / `view_*` / `unknown` 等非详情页 → 按 url-kinds.md 的指引拒绝或追问
+     - 其他 kind → 参考 url-kinds.md 对应处理方式
 
 按以下 STEP 顺序执行。每个 STEP 结尾的 GOTO 指明下一步，严格遵循跳转。
 
@@ -30,7 +32,7 @@ meegle auth status --format json
 - `$authenticated` = response.authenticated
 - `$host` = response.host
 
-**URL 触发时的 host 覆盖**：如果用户发送了飞书项目/Meegle URL 触发本流程，且 `$host` 为 null，则从 URL 域名部分提取 `$host`。
+**URL 触发时的 host 覆盖**：如果用户发送了飞书项目/Meegle URL 触发本流程，且 `$host` 为 null，则使用上一步 `url decode` 返回的 `host` 字段作为 `$host`。
 
 **跳转：**
 - IF `$authenticated == true` → GOTO STEP DONE

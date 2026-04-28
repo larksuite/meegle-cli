@@ -14,7 +14,8 @@
 - **空间名**：哪个项目空间
 - **工作项类型**：需求 / 任务 / 缺陷 / 其他
 - **字段值**：标题、优先级、负责人、描述等
-- **URL**（如有）：直接传入命令的 `url` 参数（URL 中通常包含 project_key、work_item_type、work_item_id，工具会自动解析）
+- **URL**（如有）：先调 `url decode` 解析。`url_kind` 非 `workitem_create` / `workitem_detail` 时按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问；命中则用返回的 `simple_name` 取代空间名探测，`work_item_type` 取代类型探测。**禁止**自己从 URL 截取路径段作参数。
+
 
 ### STEP 2 — 确认空间和类型
 
@@ -74,6 +75,7 @@
 | user | `"userkey"` |
 | multi-user | `"[\"userkey1\",\"userkey2\"]"`（stringified） |
 | schedule | `"[开始时间戳,结束时间戳]"`（stringified） |
+| file / multi-file | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-type <type> --field-key <field_key> <local-path>` 拿 `file_token`（工作项尚未创建，传 `--work-item-type` 而非 `--work-item-id`），再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
 
 **角色设置**（创建时）：通过 fields 中的 `role_owners` 字段，值为 stringified 对象数组：
 
@@ -113,7 +115,6 @@ meegle workitem create --work-item-type 类型key --fields '[{"field_key":"templ
 
 | 类型 | 原因 |
 |------|------|
-| `file` / `multi-file`（附件） | 需用户在界面手动上传生成内部 token |
 | `vote-boolean`（轻量表态） | 计数器，只能由用户在界面操作 |
 | `vote-option` / `vote-option-multi`（投票） | 不支持通过接口伪造投票结果 |
 | `compound_field` / `multi_user_compound_field`（复合明细表） | 内部结构校验复杂，API 暂不支持 |
