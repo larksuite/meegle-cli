@@ -5,8 +5,16 @@
 ## 空间域
 
 ### project search
+已知空间名/key：
+
 ```bash
-meegle project search --project-key 空间名或key --format json
+meegle project search --project-key 空间名或key --page-num {{page_num}} --format json
+```
+
+列出当前用户可访问的空间（按最近访问排序，分页）：
+
+```bash
+meegle project search --project-key {{project_key}} --page-num 1 --format json
 ```
 
 ## 工作项域

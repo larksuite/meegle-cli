@@ -17,11 +17,12 @@ description: |
 ## Project 空间域
 
 ### project search
-搜索空间信息，将空间名转换为 project_key 或验证空间是否存在。
+搜索空间信息，将空间名转换为 project_key 或验证空间是否存在；省略 --project-key 时返回当前用户最近访问过的空间列表（按访问时间由近及远）。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| --project-key | string | 是 | 空间 projectKey、simpleName 或空间名称 |
+| --project-key | string | 否 | 空间 projectKey、simpleName 或空间名称；留空查询当前用户可访问的空间 |
+| --page-num | number | 否 | 分页页码，每页 50 条，从 1 开始 |
 
 ---
 
