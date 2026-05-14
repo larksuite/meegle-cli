@@ -570,6 +570,87 @@ func TestMcpExecutorStep_DryRunSkipsBackend(t *testing.T) {
 	}
 }
 
+// Dry-run must surface unknown top-level params as a `validation.unknown_params`
+// list so users can spot ignored arguments without doing a live round-trip.
+// Drives the user-facing case where `--params '{"name":"..."}'` looks correct
+// in the dry-run output but is silently dropped by the backend.
+func TestMcpExecutorStep_DryRunIncludesUnknownParamsValidation(t *testing.T) {
+	step := &McpExecutorStep{}
+	tagsJSON := `{"work-item-id":"string","project-key":"string"}`
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"workitem", "update"},
+			Node: &registry.CommandNode{
+				HandlerRef: "update_workitem_fields",
+				Meta:       registry.NodeMeta{Tags: map[string]string{"mcp_param_types": tagsJSON}},
+			},
+			Flags: map[string]any{
+				"dry-run":      true,
+				"work-item-id": "1",
+				"project-key":  "p-1",
+				"name":         "stray",
+			},
+			ExplicitFlags: map[string]any{
+				"dry-run":      true,
+				"work-item-id": "1",
+				"project-key":  "p-1",
+				"name":         "stray",
+			},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("dry-run execute: %v", err)
+	}
+	data, ok := state.Result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T", state.Result.Data)
+	}
+	validation, ok := data["validation"].(map[string]any)
+	if !ok {
+		t.Fatalf("validation not a map: %#v", data["validation"])
+	}
+	unknown, ok := validation["unknown_params"].([]string)
+	if !ok {
+		t.Fatalf("unknown_params not a []string: %#v", validation["unknown_params"])
+	}
+	if len(unknown) != 1 || unknown[0] != "name" {
+		t.Errorf("unknown_params = %v, want [name]", unknown)
+	}
+}
+
+// All-valid dry-run must NOT add a validation field — preserves backward
+// compatibility for callers that parse dry-run JSON output.
+func TestMcpExecutorStep_DryRunNoValidationWhenAllParamsValid(t *testing.T) {
+	step := &McpExecutorStep{}
+	tagsJSON := `{"work-item-id":"string","project-key":"string"}`
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"workitem", "update"},
+			Node: &registry.CommandNode{
+				HandlerRef: "update_workitem_fields",
+				Meta:       registry.NodeMeta{Tags: map[string]string{"mcp_param_types": tagsJSON}},
+			},
+			Flags: map[string]any{
+				"dry-run":      true,
+				"work-item-id": "1",
+				"project-key":  "p-1",
+			},
+			ExplicitFlags: map[string]any{
+				"dry-run":      true,
+				"work-item-id": "1",
+				"project-key":  "p-1",
+			},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("dry-run execute: %v", err)
+	}
+	data := state.Result.Data.(map[string]any)
+	if _, present := data["validation"]; present {
+		t.Errorf("validation should be absent when no unknown params, got %#v", data["validation"])
+	}
+}
+
 // Regression: SessionStep must not require auth when --dry-run is set, so
 // dry-run works offline (no token) and surfaces errors locally. setupTestDir
 // isolates the config dir to a fresh tempdir so the user's real profile

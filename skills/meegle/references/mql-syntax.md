@@ -214,7 +214,7 @@ array_contains(participate_roles(), 'RD', 'QA')
 
   **排期/节点时间子字段**：
   - 节点排期：`get_node_attribute('节点名','__排期_开始时间')`、`get_node_attribute('节点名','__排期_结束时间')`
-  - 节点时间：`get_node_attribute('节点名','__节点时间_开始时间')`、`get_node_attribute('节点名','__节点时间_完成时间')`
+  - 节点时间：`get_node_attribute('节点名','__节点时间_开始时间')`、`get_node_attribute('节点名','__节点时间_结束时间')`
 
   ```sql
   -- 开始节点排期在过去 30 天内

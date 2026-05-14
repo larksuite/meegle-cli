@@ -29,3 +29,12 @@
 | --project-key | string | 是 | 空间 key |
 | --view-id | string | 是 | 视图 ID |
 | --work-item-type | string | 是 | 工作项类型 |
+
+## view list-multi-project-workitems
+查看全景视图（multiProjectView）下当前用户有权限的工作项列表。全景视图的链接上带有 `multiProjectView` 关键字，可从中提取 `view_id`。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --project-key | string | 是 | 空间 key |
+| --view-id | string | 是 | 全景视图 ID |
+| --page-num | number | 否 | 分页页码，每页 50 条，从 1 开始 |

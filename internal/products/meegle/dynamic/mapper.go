@@ -44,11 +44,12 @@ var fallbackTable = map[string]fallbackEntry{
 	// mywork (1)
 	"list_todo": {resource: "mywork", method: "todo", description: "List my work items by action (todo/done/overdue/this_week)"},
 
-	// view (4)
-	"create_fixed_view":    {resource: "view", method: "create-fixed", description: "Create fixed view"},
-	"get_view_detail":      {resource: "view", method: "get", description: "List work items under a view by view ID"},
-	"update_fixed_view":    {resource: "view", method: "update-fixed", description: "Update fixed view"},
-	"search_view_by_title": {resource: "view", method: "search", description: "Search views by title to resolve view_id"},
+	// view (5)
+	"create_fixed_view":                 {resource: "view", method: "create-fixed", description: "Create fixed view"},
+	"get_view_detail":                   {resource: "view", method: "get", description: "List work items under a view by view ID"},
+	"update_fixed_view":                 {resource: "view", method: "update-fixed", description: "Update fixed view"},
+	"search_view_by_title":              {resource: "view", method: "search", description: "Search views by title to resolve view_id"},
+	"list_multi_project_view_workitems": {resource: "view", method: "list-multi-project-workitems", description: "List work items the caller can access under a multi-project (panoramic) view; pass --view-id from a multiProjectView URL"},
 
 	// chart (2)
 	"get_chart_detail": {resource: "chart", method: "get", description: "Get chart details"},

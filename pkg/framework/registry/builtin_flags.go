@@ -5,7 +5,7 @@ package registry
 
 var BuiltinFlags = []FlagDef{
 	{Name: "set", Type: FlagTypeStringSlice, Description: "Set nested parameters using key=value, supports dot path."},
-	{Name: "params", Short: "P", Type: FlagTypeString, Description: "JSON parameters merged before --set."},
+	{Name: "params", Short: "P", Type: FlagTypeString, Description: "JSON object whose top-level keys are merged as CLI flags."},
 	{Name: "dry-run", Type: FlagTypeBool, Description: "Render the normalized request without executing the backend."},
 	{Name: "format", Short: "o", Type: FlagTypeString, Enum: []string{"json", "ndjson", "table"}, Description: "Output format. Default json."},
 	{Name: "select", Type: FlagTypeString, Description: "Field projection; comma-separated dot paths, e.g. id,creator.email."},
