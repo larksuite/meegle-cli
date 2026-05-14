@@ -261,19 +261,27 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 		}
 	}
 
+	unknownParams := findUnknownParams(state, snakeParams)
+
 	// --dry-run: return the payload that would be sent to the backend without
 	// performing the network call. This lets users preview the result of
 	// --params/--set after type coercion, and works offline (no auth required
 	// — SessionStep also short-circuits on dry-run).
 	if isDryRunFlag(state.Parsed) {
-		state.Result = &executor.RawResult{
-			Data: map[string]any{
-				"tool":    toolName,
-				"params":  snakeParams,
-				"dry_run": true,
-			},
+		payload := map[string]any{
+			"tool":    toolName,
+			"params":  snakeParams,
+			"dry_run": true,
 		}
+		if len(unknownParams) > 0 {
+			payload["validation"] = map[string]any{"unknown_params": unknownParams}
+		}
+		state.Result = &executor.RawResult{Data: payload}
 		return nil
+	}
+
+	if msg := formatUnknownParamsWarning(toolName, unknownParams); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
 	}
 
 	client := newMcpClientFromState(state)

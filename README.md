@@ -13,7 +13,7 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 ## Why Meegle CLI?
 
 - **Agent-Native** — Ships a bundled [AI Agent Skill](#ai-agent-skill) that teaches Trae, Claude Code, Cursor, Windsurf, Gemini CLI and other agents how to drive Meegle with one command. Every CLI command is designed for both humans and agents, with structured JSON output, `--dry-run` previews, and `--device-code` flows for non-TTY environments
-- **Broad Coverage** — 12 business domains (work items, workflow, subtasks, comments, work hours, relations, my-work, views, charts, team, user, project) and 40+ commands mapping to Meegle's core capabilities
+- **Broad Coverage** — 13 business domains (work items, workflow, subtasks, comments, work hours, relations, my-work, views, charts, team, user, project, attachments) and 40+ commands mapping to Meegle's core capabilities
 - **Two-Layer Parameters** — Ergonomic `--flag-name` for everyday use, fallback `--params <json>` for complex payloads like `fields[]` — pick the right granularity per call
 - **Flexible Output** — `json` / `table` / `ndjson` / `raw`, with `--select` dot-path projection for piping to other tools
 - **Secure by Default** — OS keychain credential storage, `${VAR}` env-var templating so secrets never land in config files, multi-profile switching for staging / prod
@@ -33,6 +33,7 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 | 📊 [Charts](#chart--charts)                        | List charts under a view, fetch chart details                                                  |
 | 👥 [Team & User](#team--user--people)              | List teams, team members, search users, view current login                                     |
 | 🗂️ [Projects](#project--projects)                  | Search projects by keyword                                                                     |
+| 📎 [Attachments](#attachment--attachments)         | Two-stage upload/download protocol — `prepare-*` basic commands plus `+upload` / `+download` end-to-end shortcuts |
 | 🔐 [Auth & Config](#authentication)                | OAuth login, device-code flow, multi-profile config, env-var injection                         |
 | 🔗 [URL Parsing](#url--url-parsing)                | Offline decode of Meegle / Feishu Project URLs into `url_kind` + structured fields             |
 | 🤖 [Agent Skill](#ai-agent-skill)                  | Pre-built skill for Trae / Claude Code / Cursor / Windsurf / Gemini CLI / Copilot              |
@@ -220,6 +221,7 @@ The agent consults the skill, picks the right `meegle` commands, and runs them f
 | `view get` | View details of a view |
 | `view update-fixed` | Update a fixed view |
 | `view search` | Search views by name |
+| `view list-multi-project-workitems` | List work items under a multi-project (panoramic) view |
 
 ### chart — Charts
 
@@ -509,17 +511,6 @@ Each command takes parameters via `--flag-name`:
 meegle workitem get --work-item-id 12345 --project-key PROJ
 ```
 
-### Writing `fields[]` (Write Commands)
-
-`workitem create`, `workitem update`, `workflow update-node`, and `subtask update` expect the `fields[]` payload. Pass it through `--params`:
-
-```bash
---params '{"fields":[
-  {"field_key":"name","field_value":"Title"},
-  {"field_key":"priority","field_value":"P1"}
-]}'
-```
-
 ### --set key=value (Generic)
 
 `--set` is an alternate syntax for writing **top-level** parameters — `--set key=value` is equivalent to typing `--key value`. Useful when scripting with a uniform `key=value` form, or for writing nested top-level params via dot-path. Values are auto-typed (int / float / bool / string).
@@ -535,14 +526,50 @@ meegle mywork todo --set action=this_week --set page_num=1
 
 `--set` only writes **top-level** parameters. To write a work item's `fields[]`, use `--params '{"fields":[...]}'` (see below).
 
-### --params JSON (Fallback)
+### --params JSON
 
-All commands support `--params` to pass a full JSON parameter body:
+`--params` takes a JSON object; **each top-level key is merged in as a CLI flag**.
+The key must be a valid flag of the current command — it is not a free-form payload.
+
+```bash
+# These two are equivalent:
+meegle workitem get --work-item-id 12345 --project-key PROJ
+meegle workitem get --params '{"work_item_id":12345,"project_key":"PROJ"}'
+```
+
+Use `--params` when:
+
+- the value is a nested object or array (`fields[]`, `schedule{}`) — too awkward to inline as a flag
+- you want to set many parameters at once, or feed a payload from a file (see `@file.json` below)
 
 ```bash
 meegle workitem create --project-key PROJ --work-item-type story \
   --params '{"fields":[{"field_key":"name","field_value":"Title"}]}'
 ```
+
+#### Common pitfall: not every name is a top-level flag
+
+Some values that *look* like top-level fields are actually work-item field
+values, and must be wrapped in `fields[]` rather than placed at the top
+level. For example, on `workitem update` the `priority` value belongs to
+the work item's fields, not to the command's flags:
+
+```bash
+# ❌ "priority" is not a flag of workitem update — CLI prints a stderr warning, backend ignores it
+meegle workitem update --work-item-id 12345 --params '{"priority":"P1"}'
+
+# ✓ Wrap field values inside fields[]
+meegle workitem update --work-item-id 12345 \
+  --params '{"fields":[{"field_key":"priority","field_value":"P1"}]}'
+```
+
+The CLI surfaces unknown top-level keys as a `validation.unknown_params`
+list under `--dry-run`, and as a one-line stderr warning at run time. They
+are still forwarded to the backend (in case your local tool-schema cache
+is stale — refresh with `--refresh`).
+
+Run `meegle workitem meta-fields --project-key PK --work-item-type TK`
+to look up valid `field_key`s for a work item type.
 
 #### Reading from a file (`@file.json`)
 
@@ -748,7 +775,7 @@ export MEEGLE_USER_AGENT=ci-runner  # optional; appended to User-Agent, highest 
 meegle workitem get --work-item-id 123
 ```
 
-Either variable may be set independently. When this path is taken, the CLI bypasses the keychain and does not attempt to refresh on 401 — the caller is responsible for rotating the env value.
+Either variable may be set independently. When `MEEGLE_USER_ACCESS_TOKEN` is set, the CLI bypasses the keychain and does not attempt to refresh on 401 — the caller is responsible for rotating the env value. Setting only `MEEGLE_HOST` (without a token) still uses the keychain-stored credentials.
 
 ### Custom Auth Header
 

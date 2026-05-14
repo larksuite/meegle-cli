@@ -13,7 +13,7 @@
 ## 为什么选择 Meegle CLI？
 
 - **Agent 友好** — 附带一份 [AI Agent Skill](#ai-agent-skill)，一条命令即可把 Meegle 操作手册喂给 Trae、Claude Code、Cursor、Windsurf、Gemini CLI 等主流 Agent。CLI 命令同时面向人类和 Agent 设计，结构化 JSON 输出、`--dry-run` 预览、`--device-code` 无 TTY 流程
-- **覆盖完整** — 12 个业务域（工作项、工作流、子任务、评论、工时、关联、我的工作、视图、图表、团队、用户、空间），40+ 命令映射到 Meegle 核心能力
+- **覆盖完整** — 13 个业务域（工作项、工作流、子任务、评论、工时、关联、我的工作、视图、图表、团队、用户、空间、附件），40+ 命令映射到 Meegle 核心能力
 - **两层参数模型** — 日常用 `--flag-name` 轻便直接，复杂载荷（如 `fields[]`）用 `--params <json>` 兜底 —— 按场景选择合适粒度
 - **输出格式灵活** — 支持 `json` / `table` / `ndjson` / `raw`，配合 `--select` 点路径投影可直接 pipe 给其他工具
 - **默认安全** — 凭证存进系统 keychain、`${VAR}` 环境变量模板让 secret 不落地到 config 文件、多 profile 分离 staging / prod
@@ -33,6 +33,7 @@
 | 📊 [图表](#chart--度量域)                          | 列出视图下的图表、查看图表详情                                                           |
 | 👥 [团队与用户](#team--user--人员域)               | 列出团队、团队成员、搜索用户、查看当前登录身份                                           |
 | 🗂️ [空间](#project--空间域)                        | 按关键词搜索空间                                                                         |
+| 📎 [附件](#attachment--附件域)                     | 两段式上传/下载协议 —— `prepare-*` 基础命令 + `+upload` / `+download` 端到端快捷命令     |
 | 🔐 [认证与配置](#认证)                             | OAuth 登录、Device Code 流程、多 profile 配置、环境变量注入                              |
 | 🔗 [URL 解析](#url--url-解析)                      | 离线解析飞书项目 / Meegle URL，输出 `url_kind` + 结构化字段                              |
 | 🤖 [Agent Skill](#ai-agent-skill)                  | 内置 skill 供 Trae / Claude Code / Cursor / Windsurf / Gemini / Copilot 使用             |
@@ -220,6 +221,7 @@ Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--
 | `view get` | 查看视图详情 |
 | `view update-fixed` | 更新固定视图 |
 | `view search` | 按名称搜索视图 |
+| `view list-multi-project-workitems` | 查看全景视图（multiProjectView）下的工作项列表 |
 
 ### chart — 度量域
 
@@ -501,17 +503,6 @@ meegle user search --user-keys "张三,李四" --project-key PROJ
 meegle workitem get --work-item-id 12345 --project-key PROJ
 ```
 
-### 写 `fields[]`（写入命令）
-
-`workitem create`、`workitem update`、`workflow update-node`、`subtask update` 需要传 `fields[]`，通过 `--params` 走：
-
-```bash
---params '{"fields":[
-  {"field_key":"name","field_value":"标题"},
-  {"field_key":"priority","field_value":"P1"}
-]}'
-```
-
 ### --set key=value（通用）
 
 `--set` 是普通 flag 的**替代写法**，只影响**顶层参数**：`--set key=value` 等价于 `--key value`。适合在脚本里用统一的 key=value 语法，或通过 dot-path 写嵌套顶层对象。值自动类型推断（int / float / bool / string）。
@@ -527,14 +518,49 @@ meegle mywork todo --set action=this_week --set page_num=1
 
 `--set` 只写**顶层参数**，**不会**写到工作项的 `fields[]`。写 `fields[]` 请用 `--params '{"fields":[...]}'`（见下）。
 
-### --params JSON（兜底）
+### --params JSON
 
-所有命令都支持 `--params` 传入完整 JSON 参数：
+`--params` 接收一个 JSON 对象，**每个顶层 key 都会作为 CLI flag 合并进来**。
+顶层 key 必须是当前命令的合法 flag —— 它不是一份自由结构的载荷。
+
+```bash
+# 下面两条等价：
+meegle workitem get --work-item-id 12345 --project-key PROJ
+meegle workitem get --params '{"work_item_id":12345,"project_key":"PROJ"}'
+```
+
+什么时候用 `--params`：
+
+- 值是嵌套对象或数组（`fields[]`、`schedule{}`），直接写 flag 太别扭
+- 想一次性批量传多个参数，或者从文件加载载荷（见下方 `@file.json`）
 
 ```bash
 meegle workitem create --project-key PROJ --work-item-type story \
   --params '{"fields":[{"field_key":"name","field_value":"标题"}]}'
 ```
+
+#### 常见误用：不是所有名字都是顶层 flag
+
+有些**看起来像**顶层字段的值，其实是工作项的字段值，必须包在 `fields[]`
+里，而不是放在顶层。比如 `workitem update` 时，`priority` 属于工作项字段，
+不是命令的 flag：
+
+```bash
+# ❌ "priority" 不是 workitem update 的合法 flag —— CLI 会在 stderr 输出 warning，后端忽略
+meegle workitem update --work-item-id 12345 --params '{"priority":"P1"}'
+
+# ✓ 字段值要包在 fields[] 里
+meegle workitem update --work-item-id 12345 \
+  --params '{"fields":[{"field_key":"priority","field_value":"P1"}]}'
+```
+
+不在工具声明 flag 列表里的顶层 key，在 `--dry-run` 输出里会以
+`validation.unknown_params` 列出，运行时则会向 stderr 打一行
+warning。它们仍然会被原样转发给后端（防止本地工具 schema 缓存陈旧
+误判，需要时用 `--refresh` 刷新）。
+
+通过 `meegle workitem meta-fields --project-key PK --work-item-type TK`
+查询某种工作项类型下合法的 `field_key`。
 
 #### 从文件读取（`@file.json`）
 
@@ -726,7 +752,7 @@ export MEEGLE_USER_AGENT=ci-runner  # 可选；追加到 User-Agent，优先级�
 meegle workitem get --work-item-id 123
 ```
 
-任一变量可以单独设置。走这个路径时 CLI 不访问 keychain，401 错误不会自动 refresh，由调用方自行轮转。
+任一变量可以单独设置。当 `MEEGLE_USER_ACCESS_TOKEN` 设置时，CLI 不访问 keychain，401 错误不会自动 refresh，由调用方自行轮转。仅设置 `MEEGLE_HOST`（不带 token）时仍走 keychain 中存储的凭证。
 
 ### 自定义 Auth Header
 

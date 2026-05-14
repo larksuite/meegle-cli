@@ -8,6 +8,17 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.2] - 2026-05-14
+
+### Added
+
+- New `view list-multi-project-workitems` command exposing the upstream `list_multi_project_view_workitems` MCP tool — lists work items the caller can access under a multi-project ("panoramic") view, identified by a `multiProjectView` URL's `view_id`; takes `--project-key`, `--view-id`, and an optional `--page-num` (50 items per page, 1-based)
+- Top-level parameters merged via `--params` / `--set` are now validated against the tool's declared flag set. Unknown arguments emit a one-line stderr warning at run time and appear under `validation.unknown_params` in `--dry-run` output, pointing users at `--params '{"fields":[...]}'` for work-item field values. Validation is advisory: unknown keys are still forwarded to the backend so a stale local tool-schema cache cannot block legitimate calls (refresh with `--refresh`)
+
+### Changed
+
+- Clarified `--params` documentation: the built-in flag's `--help` description and the README now state that top-level keys are merged as CLI flags (not a free-form payload), with a common-pitfall example showing that work-item field values must be wrapped in `fields[]`
+
 ## [v1.0.1] - 2026-04-28
 
 ### Added

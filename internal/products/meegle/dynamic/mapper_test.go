@@ -60,11 +60,12 @@ var fallbackTests = []struct {
 	{"list_node_field_config", "workflow", "meta-node-fields"},
 	// mywork (1)
 	{"list_todo", "mywork", "todo"},
-	// view (4)
+	// view (5)
 	{"create_fixed_view", "view", "create-fixed"},
 	{"get_view_detail", "view", "get"},
 	{"update_fixed_view", "view", "update-fixed"},
 	{"search_view_by_title", "view", "search"},
+	{"list_multi_project_view_workitems", "view", "list-multi-project-workitems"},
 	// chart (2)
 	{"get_chart_detail", "chart", "get"},
 	{"list_charts", "chart", "list"},
@@ -95,8 +96,8 @@ func TestFallbackTable(t *testing.T) {
 }
 
 func TestFallbackTableCount(t *testing.T) {
-	if len(fallbackTable) != 36 {
-		t.Errorf("expected 36 fallback entries, got %d", len(fallbackTable))
+	if len(fallbackTable) != 37 {
+		t.Errorf("expected 37 fallback entries, got %d", len(fallbackTable))
 	}
 }
 
