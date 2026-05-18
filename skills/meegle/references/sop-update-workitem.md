@@ -14,7 +14,7 @@
 - **目标工作项** — URL、工作项 ID 或名称
 - **修改内容** — 哪些字段要改成什么值
 
-> **URL 处理**：用户给了 URL 必须先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问。拿到 `simple_name` 和 `work_item_id` 后，必须再调 `project search` 把 `simple_name` 转为权威 `project_key`（同名空间可能有多个）。**禁止**自己从 URL 截取路径段作参数。`work_item_id` 参数必须是字符串类型。
+> **URL 处理**：用户给了 URL 必须先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](url-kinds.md) 拒绝或追问。拿到 `simple_name` 和 `work_item_id` 后，必须再调 `project search` 把 `simple_name` 转为权威 `project_key`（同名空间可能有多个）。**禁止**自己从 URL 截取路径段作参数。`work_item_id` 参数必须是字符串类型。
 
 🚨 **获取工作项类型（极重要）**：后续所有查询（字段配置、角色配置等）都强依赖 `work_item_type`。如果用户没有明确告知类型，**必须先调 `workitem get` 获取该实例的真实 `work_item_type`（返回体中的 `work_item_type.key`）**，绝不能猜测为 story 或 issue。
 

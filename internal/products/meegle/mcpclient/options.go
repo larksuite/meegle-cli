@@ -46,10 +46,37 @@ func WithUserAgent(ua string) Option {
 	}
 }
 
-// DefaultUserAgent returns "meegle-cli" with module version appended if available.
-// e.g. "meegle-cli" or "meegle-cli/0.1.0"
+// injectedVersion is the version string set by main packages via SetVersion.
+// When non-empty, DefaultUserAgent prefers it over debug.ReadBuildInfo().
+// Reason: the npm release build injects the semantic version through
+// `-ldflags "-X main.version=..."`, and that value is the one product/users
+// identify releases by — not Go's pseudo-version (which carries commit hashes
+// and a "+dirty" suffix when the build tree has uncommitted files).
+var injectedVersion string
+
+// SetVersion records the semantic version reported in User-Agent. Main
+// packages should call this before constructing the CLI app so the first
+// outbound request already carries the correct UA. Empty / "dev" inputs are
+// ignored to preserve the debug.ReadBuildInfo() fallback in local builds.
+func SetVersion(v string) {
+	if v == "" || v == "dev" {
+		return
+	}
+	injectedVersion = v
+}
+
+// DefaultUserAgent returns "meegle-cli" with version appended if available.
+// e.g. "meegle-cli" or "meegle-cli/1.0.1"
+//
+// Version source priority:
+//  1. injectedVersion (set via SetVersion, populated from `-ldflags "-X main.version=..."`)
+//  2. debug.ReadBuildInfo().Main.Version (Go module version — SDK consumers
+//     and local `go build` invocations that bypass the Makefile)
 func DefaultUserAgent() string {
 	base := "meegle-cli"
+	if injectedVersion != "" {
+		return base + "/" + injectedVersion
+	}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		v := info.Main.Version
 		if v != "" && v != "(devel)" {

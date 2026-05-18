@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.3] - 2026-05-18
+
+### Fixed
+
+- `User-Agent` now reports the semantic version injected via `-ldflags "-X main.version=..."` (e.g. `meegle-cli/1.0.3`) instead of Go's `debug.ReadBuildInfo()` pseudo-version. Previously backends observed UAs like `meegle-cli/v0.0.0-20260417123425-9973fd9cecc4+dirty` whenever a build was made off a non-tagged commit or with uncommitted files in the worktree, making per-version traffic attribution unreliable on the server-side dashboard. The fix landed on `main` after the v1.0.2 release commit was tagged and published, so the CHANGELOG entry was retroactively moved out of the v1.0.2 section to match what npm actually shipped
+
 ## [v1.0.2] - 2026-05-14
 
 ### Added

@@ -14,7 +14,7 @@
 - **空间名**：哪个项目空间
 - **工作项类型**：需求 / 任务 / 缺陷 / 其他
 - **字段值**：标题、优先级、负责人、描述等
-- **URL**（如有）：先调 `url decode` 解析。`url_kind` 非 `workitem_create` / `workitem_detail` 时按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问；命中则用返回的 `simple_name` 取代空间名探测，`work_item_type` 取代类型探测。**禁止**自己从 URL 截取路径段作参数。
+- **URL**（如有）：先调 `url decode` 解析。`url_kind` 非 `workitem_create` / `workitem_detail` 时按 [url-kinds.md](url-kinds.md) 拒绝或追问；命中则用返回的 `simple_name` 取代空间名探测，`work_item_type` 取代类型探测。**禁止**自己从 URL 截取路径段作参数。
 
 
 ### STEP 2 — 确认空间和类型
