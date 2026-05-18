@@ -15,7 +15,7 @@
 **并行执行**：
 
 1. **定位工作项**：从用户输入中提取 `work_item_id`、`project_key`、`work_item_type`。
-   - **URL 解析**：用户给了链接则先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问。decode 返回的 `simple_name` 必须再调 `project search` 转为权威 `project_key`（同名空间可能有多个无权限）。**禁止**自己从 URL 截取路径段作参数。
+   - **URL 解析**：用户给了链接则先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](url-kinds.md) 拒绝或追问。decode 返回的 `simple_name` 必须再调 `project search` 转为权威 `project_key`（同名空间可能有多个无权限）。**禁止**自己从 URL 截取路径段作参数。
    - **ID 类型**：传给任何工具的 `work_item_id` 必须是 **字符串（String）**。
    - 信息不足才追问。
 2. **获取当前用户**：调用 `user search`，入参 `["current_login_user()"]` 拿到当前用户的 `user_key`（下一步必填）。

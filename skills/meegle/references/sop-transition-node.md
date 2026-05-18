@@ -26,7 +26,7 @@
 ### STEP 1 — 定位工作项
 
 从用户输入中提取 work_item_id 和 project_key：
-- 用户给了 **URL** → 先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](../references/url-kinds.md) 拒绝或追问
+- 用户给了 **URL** → 先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](url-kinds.md) 拒绝或追问
 - 用户给了 **ID** → 需同时确定 project_key
 - 信息不足时才追问
 

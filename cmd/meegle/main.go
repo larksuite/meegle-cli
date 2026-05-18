@@ -12,6 +12,7 @@ import (
 	productmeegle "github.com/larksuite/meegle-cli/internal/products/meegle"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/commands"
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
+	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 	frameworkerrors "github.com/larksuite/meegle-cli/pkg/framework/errors"
 	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
@@ -19,6 +20,11 @@ import (
 var version = "dev"
 
 func main() {
+	// Propagate the ldflags-injected version into the User-Agent. Without this
+	// the UA falls back to Go's debug.ReadBuildInfo() pseudo-version, which is
+	// what backends observe today (e.g. "meegle-cli/v0.0.0-…+dirty").
+	mcpclient.SetVersion(version)
+
 	// Resolve mapped commands for the inspect command
 	mappedCommands := productmeegle.ResolveMappedCommands()
 

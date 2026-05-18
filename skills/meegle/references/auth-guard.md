@@ -5,7 +5,7 @@
 - **主动登录**：用户说"登录 Meegle"、"连接飞书项目"、"login meegle"等。
 - **被动拦截**：用户请求任何 Meegle 业务操作（查询待办、查工作项、创建任务等），优先执行 Auth Guard。
 - **URL 触发**：用户发送了飞书项目/Meegle URL。处理流程：
-  1. 先调 `url decode` 拿到结构化字段（`url_kind`、`host`、`simple_name`、`work_item_id` 等）。**禁止**自己从 URL 截取路径段作参数。字段含义与 kind 分支见 [url-kinds.md](./url-kinds.md)。
+  1. 先调 `url decode` 拿到结构化字段（`url_kind`、`host`、`simple_name`、`work_item_id` 等）。**禁止**自己从 URL 截取路径段作参数。字段含义与 kind 分支见 [url-kinds.md](url-kinds.md)。
   2. 保存 `$host` = response.host、`$url_kind`、`$simple_name`、`$work_item_id`。
   3. 执行 Auth Guard（下面的 STEP 1 起）。
   4. 登录成功后按 `$url_kind` 分支：
