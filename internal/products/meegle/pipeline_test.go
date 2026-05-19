@@ -875,6 +875,53 @@ func TestCoerceArray_BrokenJSONKeptAsString(t *testing.T) {
 	}
 }
 
+// --- coerceValue object-type handling (issue#14) -------------------------
+
+func TestCoerceValue_ObjectJSONStringDecoded(t *testing.T) {
+	got := coerceValue(`{"start_date":"2026-05-19","end_date":"2026-05-20"}`, "object", "")
+	m, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("type = %T, want map[string]any (got %#v)", got, got)
+	}
+	if m["start_date"] != "2026-05-19" || m["end_date"] != "2026-05-20" {
+		t.Fatalf("decoded map = %#v", m)
+	}
+}
+
+func TestCoerceValue_ObjectJSONArrayDecoded(t *testing.T) {
+	got := coerceValue(`[1,2,3]`, "object", "")
+	arr, ok := got.([]any)
+	if !ok {
+		t.Fatalf("type = %T, want []any", got)
+	}
+	if len(arr) != 3 {
+		t.Fatalf("len = %d, want 3: %#v", len(arr), arr)
+	}
+}
+
+func TestCoerceValue_ObjectBrokenJSONKeptAsString(t *testing.T) {
+	got := coerceValue(`{not json`, "object", "")
+	if got != `{not json` {
+		t.Fatalf("got = %#v, want raw string", got)
+	}
+}
+
+func TestCoerceValue_ObjectEmptyStringPassesThrough(t *testing.T) {
+	got := coerceValue("", "object", "")
+	if got != "" {
+		t.Fatalf("got = %#v, want empty string", got)
+	}
+}
+
+func TestCoerceValue_ObjectNonStringPassesThrough(t *testing.T) {
+	in := map[string]any{"already": "object"}
+	got := coerceValue(in, "object", "")
+	m, ok := got.(map[string]any)
+	if !ok || m["already"] != "object" {
+		t.Fatalf("got = %#v", got)
+	}
+}
+
 func TestNewPipelineFactory(t *testing.T) {
 	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil))
 	pipe, err := factory(cliapp.Config{})

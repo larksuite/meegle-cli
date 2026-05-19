@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.4] - 2026-05-19
+
+### Fixed
+
+- Object-typed parameters discovered from the MCP tool schema (e.g. `subtask update --schedule`, `workflow update-node --schedule`) are now JSON-decoded into a real object before being sent to the backend; previously the raw JSON string was forwarded verbatim, so the server silently dropped the field and downstream attributes (e.g. `start_date` / `end_date` on a subtask schedule) ended up empty. Malformed JSON is still passed through unchanged so the backend can surface a clear validation error instead of a no-op (issue #14)
+
 ## [v1.0.3] - 2026-05-18
 
 ### Fixed
