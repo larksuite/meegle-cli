@@ -474,6 +474,23 @@ func coerceValue(v any, mcpType string, itemsType string) any {
 		return v
 	case "array":
 		return coerceArray(v, itemsType)
+	case "object":
+		// Object-typed MCP params are surfaced as `--flag string` (see
+		// registry.mapParamType) and must be JSON-decoded before reaching
+		// the backend; otherwise the server receives a string literal and
+		// silently drops the field (e.g. issue#14 `subtask update --schedule`).
+		// On parse failure keep the raw string so the backend can surface
+		// a clearer error than a no-op.
+		if s, ok := v.(string); ok && s != "" {
+			trimmed := strings.TrimSpace(s)
+			if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+				var parsed any
+				if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+					return parsed
+				}
+			}
+		}
+		return v
 	default:
 		return v
 	}
