@@ -71,6 +71,23 @@ var fallbackTable = map[string]fallbackEntry{
 	// attachment (2)
 	"upload_file":      {resource: "attachment", method: "prepare-upload", description: "Preprocess an attachment upload — returns the signed URL + multipart plan"},
 	"get_download_url": {resource: "attachment", method: "prepare-download", description: "Preprocess an attachment download — returns the signed URL + multipart plan"},
+
+	// deliverable (1)
+	"list_deliverables": {resource: "deliverable", method: "list", description: "List deliverables with their root and source work items"},
+
+	// resource — resource library (2)
+	"create_resource_work_item":        {resource: "resource", method: "create", hasFields: true, description: "Create a resource template (resource instance) under a resource-library-enabled work item type"},
+	"get_resource_work_item_type_conf": {resource: "resource", method: "meta-fields", description: "List resource library configuration (resource fields and roles)"},
+
+	// wbs — plan tables (8)
+	"list_wbs_draft_rows":              {resource: "wbs", method: "list-draft-rows", description: "List rows in a WBS draft, filtered by query and projected to selected fields"},
+	"list_wbs_instance_rows":           {resource: "wbs", method: "list-instance-rows", description: "List rows in a published WBS instance, filtered by query and projected to selected fields"},
+	"edit_wbs_draft":                   {resource: "wbs", method: "edit-draft", description: "Apply one atomic operation to a single WBS draft row (add/delete/restore/sort/rename/owner/schedule); operation type via --params"},
+	"create_wbs_draft":                 {resource: "wbs", method: "create-draft", description: "Create a new WBS draft for a work item instance"},
+	"publish_wbs_draft":                {resource: "wbs", method: "publish-draft", description: "Publish a WBS draft online"},
+	"reset_wbs_draft":                  {resource: "wbs", method: "reset-draft", description: "Reset a WBS draft to match the published instance, discarding unpublished changes"},
+	"get_wbs_draft_operation_progress": {resource: "wbs", method: "get-draft-progress", description: "Get the execution progress of a WBS draft operation (create/edit/publish)"},
+	"list_element_template":            {resource: "wbs", method: "list-element-templates", description: "List element templates (resource nodes and tasks) from the flow resource library"},
 }
 
 func MapTool(tool types.ToolDefinition) types.MappedCommand {
