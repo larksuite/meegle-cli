@@ -78,6 +78,20 @@ var fallbackTests = []struct {
 	{"search_project_info", "project", "search"},
 	// user (1)
 	{"search_user_info", "user", "search"},
+	// deliverable (1)
+	{"list_deliverables", "deliverable", "list"},
+	// resource (2)
+	{"create_resource_work_item", "resource", "create"},
+	{"get_resource_work_item_type_conf", "resource", "meta-fields"},
+	// wbs (8)
+	{"list_wbs_draft_rows", "wbs", "list-draft-rows"},
+	{"list_wbs_instance_rows", "wbs", "list-instance-rows"},
+	{"edit_wbs_draft", "wbs", "edit-draft"},
+	{"create_wbs_draft", "wbs", "create-draft"},
+	{"publish_wbs_draft", "wbs", "publish-draft"},
+	{"reset_wbs_draft", "wbs", "reset-draft"},
+	{"get_wbs_draft_operation_progress", "wbs", "get-draft-progress"},
+	{"list_element_template", "wbs", "list-element-templates"},
 }
 
 func TestFallbackTable(t *testing.T) {
@@ -96,8 +110,8 @@ func TestFallbackTable(t *testing.T) {
 }
 
 func TestFallbackTableCount(t *testing.T) {
-	if len(fallbackTable) != 37 {
-		t.Errorf("expected 37 fallback entries, got %d", len(fallbackTable))
+	if len(fallbackTable) != 48 {
+		t.Errorf("expected 48 fallback entries, got %d", len(fallbackTable))
 	}
 }
 

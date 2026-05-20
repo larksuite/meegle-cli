@@ -13,7 +13,7 @@
 ## 为什么选择 Meegle CLI？
 
 - **Agent 友好** — 附带一份 [AI Agent Skill](#ai-agent-skill)，一条命令即可把 Meegle 操作手册喂给 Trae、Claude Code、Cursor、Windsurf、Gemini CLI 等主流 Agent。CLI 命令同时面向人类和 Agent 设计，结构化 JSON 输出、`--dry-run` 预览、`--device-code` 无 TTY 流程
-- **覆盖完整** — 13 个业务域（工作项、工作流、子任务、评论、工时、关联、我的工作、视图、图表、团队、用户、空间、附件），40+ 命令映射到 Meegle 核心能力
+- **覆盖完整** — 16 个业务域（工作项、工作流、子任务、评论、工时、关联、我的工作、视图、图表、团队、用户、空间、附件、交付物、资源库、WBS 计划表），50+ 命令映射到 Meegle 核心能力
 - **两层参数模型** — 日常用 `--flag-name` 轻便直接，复杂载荷（如 `fields[]`）用 `--params <json>` 兜底 —— 按场景选择合适粒度
 - **输出格式灵活** — 支持 `json` / `table` / `ndjson` / `raw`，配合 `--select` 点路径投影可直接 pipe 给其他工具
 - **默认安全** — 凭证存进系统 keychain、`${VAR}` 环境变量模板让 secret 不落地到 config 文件、多 profile 分离 staging / prod
@@ -34,6 +34,9 @@
 | 👥 [团队与用户](#team--user--人员域)               | 列出团队、团队成员、搜索用户、查看当前登录身份                                           |
 | 🗂️ [空间](#project--空间域)                        | 按关键词搜索空间                                                                         |
 | 📎 [附件](#attachment--附件域)                     | 两段式上传/下载协议 —— `prepare-*` 基础命令 + `+upload` / `+download` 端到端快捷命令     |
+| 📦 [交付物](#deliverable--交付物域)                | 列出交付物及所属根工作项、来源工作项                                                     |
+| 🧩 [资源库](#resource--资源库)                     | 创建资源模板、查看资源库配置                                                             |
+| 🗓️ [WBS 计划表](#wbs--wbs-计划表)                  | 查询草稿 / 已发布计划行、创建 / 编辑 / 发布 / 重置草稿、查询草稿进度、列流程资源库元素   |
 | 🔐 [认证与配置](#认证)                             | OAuth 登录、Device Code 流程、多 profile 配置、环境变量注入                              |
 | 🔗 [URL 解析](#url--url-解析)                      | 离线解析飞书项目 / Meegle URL，输出 `url_kind` + 结构化字段                              |
 | 🤖 [Agent Skill](#ai-agent-skill)                  | 内置 skill 供 Trae / Claude Code / Cursor / Windsurf / Gemini / Copilot 使用             |
@@ -253,6 +256,32 @@ Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--
 | `attachment prepare-download` | 下载预处理 —— 返回带签名的对象存储 URL 与分片计划 |
 | `attachment +upload` | 端到端上传：预处理 + 签名 HTTP POST，返回 `file_token` 与文件元信息 |
 | `attachment +download` | 端到端下载：预处理 + 签名 HTTP GET + 原子写文件，用于消费 `workitem get` / `comment list` 返回的 `file_url` |
+
+### deliverable — 交付物域
+
+| 命令 | 说明 |
+|------|------|
+| `deliverable list` | 列出交付物及其根工作项、来源工作项 |
+
+### resource — 资源库
+
+| 命令 | 说明 |
+|------|------|
+| `resource create` | 在启用资源库的工作项类型下创建资源模板（资源实例） |
+| `resource meta-fields` | 查看资源库配置（资源字段、资源角色） |
+
+### wbs — WBS 计划表
+
+| 命令 | 说明 |
+|------|------|
+| `wbs list-draft-rows` | 在计划表草稿中按条件筛选行并返回指定字段 |
+| `wbs list-instance-rows` | 在已发布的线上计划表实例中按条件筛选行并返回指定字段 |
+| `wbs create-draft` | 为指定工作项实例创建新的计划表草稿 |
+| `wbs edit-draft` | 对计划表草稿单行执行一次原子操作（新增 / 删除 / 恢复 / 排序 / 改名 / 改负责人 / 改排期），操作类型通过 `--params` 指定 |
+| `wbs publish-draft` | 将编辑完成的草稿发布到线上 |
+| `wbs reset-draft` | 将草稿重置为线上实例状态，放弃所有未发布的修改 |
+| `wbs get-draft-progress` | 查询计划表草稿操作（创建 / 编辑 / 发布）的执行进度 |
+| `wbs list-element-templates` | 列出流程资源库中的资源节点与资源任务模板 |
 
 ### auth — 认证域
 

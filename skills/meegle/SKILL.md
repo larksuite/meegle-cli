@@ -235,6 +235,44 @@ description: |
 
 ---
 
+## Deliverable 交付物域
+
+> 单命令小域，参数表见 [references/misc.md](references/misc.md)。
+
+### deliverable list
+查看交付物详情及其根工作项 / 来源工作项。可按工作项 ID 列表过滤。
+
+---
+
+## Resource 资源库
+
+> 资源库（资源模板）管理。`resource create` 创建资源实例；查看资源库的字段 / 角色配置用 `resource meta-fields`。详细参数表见 [references/misc.md](references/misc.md)。
+
+### resource create
+在已启用资源库的工作项类型下创建资源模板（资源实例）。创建前先调 `resource meta-fields` 取字段 / 角色配置。
+
+---
+
+## WBS 计划表
+
+> 计划表（WBS）有 **草稿（draft）** 与 **已发布实例（instance）** 两套数据模型。常见编辑流程：`create-draft` → 多次 `edit-draft` → `publish-draft`；放弃改动用 `reset-draft`。详细参数表与 `edit-draft` 的 operation 子类型见 [references/wbs.md](references/wbs.md)。
+
+### wbs list-draft-rows
+在计划表草稿中按条件筛选行。常用筛选字段：`wbs_name`、`wbs_parent_id`、`wbs_owner_in_charge`、`wbs_states_doing`。详见 [references/wbs.md](references/wbs.md)。
+
+### wbs list-instance-rows
+在已发布的线上计划表实例中按条件筛选行。参数同 `wbs list-draft-rows`。
+
+### wbs edit-draft
+对计划表草稿单行执行一次原子操作。操作类型（新增 / 删除 / 恢复 / 排序 / 改名 / 改负责人 / 改排期）通过 `operation` 参数指定，结构见 [references/wbs.md](references/wbs.md)。
+> ⚠️ **前置**：草稿不存在时先调 `wbs create-draft`，再 `edit-draft`。判断方法：直接 `wbs list-draft-rows` 报"草稿不存在"类错误即视为缺失草稿。
+
+### wbs publish-draft
+将编辑完成的草稿发布到线上。
+> ⚠️ 全量发布前必须用**固定话术**二次确认："本人及协同者的全部编辑内容均会被发布，请确认是否全量发布？"；部分发布（传入 `uuid_strings_list`）无需二次确认。
+
+---
+
 ## 其它低频域
 
 度量图表、子任务、关系定义查询的命令参数表见 [references/misc.md](references/misc.md)：
@@ -242,6 +280,7 @@ description: |
 - **Chart 度量域** — `chart get` / `chart list`
 - **SubTask 子任务域** — `subtask update`（create/update/confirm/rollback）
 - **Relation 关系域** — `relation list` / `relation meta-definitions`
+- **WBS 计划表 · 辅助命令** — `wbs create-draft` / `wbs reset-draft` / `wbs get-draft-progress` / `wbs list-element-templates`（见 [references/wbs.md](references/wbs.md)）
 
 ---
 

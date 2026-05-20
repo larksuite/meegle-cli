@@ -8,6 +8,14 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.5] - 2026-05-20
+
+### Added
+
+- New `deliverable` domain exposing the upstream `list_deliverables` MCP tool — `deliverable list` returns deliverables along with their root and source work items
+- New `resource` domain for Meegle's resource-library feature — `resource create` creates a resource template (resource instance) under a resource-library-enabled work item type, `resource meta-fields` lists the resource library configuration (resource fields and roles)
+- New `wbs` domain covering plan-table draft + instance workflows: `wbs list-draft-rows` / `wbs list-instance-rows` filter and project rows, `wbs create-draft` creates a new draft for a work item instance, `wbs edit-draft` applies one atomic operation to a single draft row (add / delete / restore / sort / rename / owner / schedule via `--params`), `wbs publish-draft` publishes a draft online, `wbs reset-draft` discards unpublished changes, `wbs get-draft-progress` polls async-operation progress, `wbs list-element-templates` lists element templates (resource nodes and tasks) from the flow resource library
+
 ## [v1.0.4] - 2026-05-19
 
 ### Fixed

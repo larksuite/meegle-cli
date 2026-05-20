@@ -1,6 +1,6 @@
 # 其它低频命令
 
-低频/单命令小域的参数表汇总。涵盖团队、图表、子任务、关系、评论查询、工时记录。
+低频/单命令小域的参数表汇总。涵盖团队、图表、子任务、关系、评论查询、工时记录、交付物、资源库、WBS 辅助命令。
 
 ---
 
@@ -101,3 +101,82 @@
 | --project-key | string | 是 | 空间 key |
 | --work-item-type | string | 是 | 工作项类型 |
 | --work-item-id | string | 是 | 工作项 ID |
+
+---
+
+## 交付物
+
+### deliverable list
+查看交付物详情及其所属根工作项 / 来源工作项。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --project-key | string | 是 | 空间 key |
+| --work-item-ids | string[] | 否 | 工作项 ID 列表；URL 自动解析；提供名称需先调 `workitem get` 拿 ID |
+
+---
+
+## 资源库
+
+### resource create
+在已启用资源库的工作项类型下创建资源模板（资源实例）。先调 `resource meta-fields` 取字段 / 角色配置。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --project-key | string | 是 | 空间 key |
+| --work-item-type-key | string | 是 | 工作项类型 key 或名称；失败时先调 `workitem meta-types` |
+| --fields | object[] | 否 | 资源字段列表，每项含字段 key 与字段值 |
+| --roles | object[] | 否 | 角色人员；为空则不指定 |
+| --template-id | string | 否 | 工作流模板 ID 或名称；未传则取该工作项类型的第一个流程模板 |
+
+### resource meta-fields
+查看资源库的字段 / 角色配置。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --project-key | string | 是 | 空间 key |
+| --work-item-type-key | string | 是 | 工作项类型 key 或名称 |
+
+---
+
+## WBS 辅助命令
+
+> 计划表（WBS）的核心查询 / 编辑 / 发布命令见 [wbs.md](wbs.md)。本节仅收 4 个辅助命令：草稿生命周期管理（create-draft / reset-draft）、异步操作进度查询（get-draft-progress）、流程资源库元素查询（list-element-templates）。
+
+### wbs create-draft
+为指定工作项实例创建新的计划表草稿。当需要编辑计划表但当前不存在草稿时，先调本工具创建草稿，再配合 `wbs edit-draft` 进行编辑。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --work-item-id | string | 是 | 工作项 ID，单值；URL 自动解析 |
+| --project-key | string | 是 | 空间 key |
+
+### wbs reset-draft
+将草稿重置为线上实例状态，**放弃所有未发布的修改**。不传 `uuids` 时全量重置。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --work-item-id | string | 是 | 工作项 ID |
+| --project-key | string | 是 | 空间 key |
+| --uuids | string[] | 否 | 要重置的行 uuid 列表；为空则全量重置 |
+
+### wbs get-draft-progress
+查询计划表草稿异步操作（create / edit / publish / reset）的执行进度。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --project-key | string | 是 | 空间 key |
+| --work-item-id | string | 是 | 工作项 ID 或名称 |
+| --op-type | string | 是 | 操作类型：`create` / `edit` / `publish` / `reset` |
+| --operation-id | string | 是 | 操作 ID（由 create-draft / edit-draft / publish-draft / reset-draft 返回） |
+
+### wbs list-element-templates
+列出流程资源库中的资源节点（node）或资源任务（task）模板。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| --element-type | string | 是 | 资源库类型：`node` 或 `task` |
+| --project-key | string | 是 | 空间 key |
+| --work-item-type | string | 是 | 工作项类型 key 或名称 |
+| --page-size | number | 否 | 页大小 |
+| --page-no | number | 否 | 页码 |

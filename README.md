@@ -13,7 +13,7 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 ## Why Meegle CLI?
 
 - **Agent-Native** — Ships a bundled [AI Agent Skill](#ai-agent-skill) that teaches Trae, Claude Code, Cursor, Windsurf, Gemini CLI and other agents how to drive Meegle with one command. Every CLI command is designed for both humans and agents, with structured JSON output, `--dry-run` previews, and `--device-code` flows for non-TTY environments
-- **Broad Coverage** — 13 business domains (work items, workflow, subtasks, comments, work hours, relations, my-work, views, charts, team, user, project, attachments) and 40+ commands mapping to Meegle's core capabilities
+- **Broad Coverage** — 16 business domains (work items, workflow, subtasks, comments, work hours, relations, my-work, views, charts, team, user, project, attachments, deliverables, resource library, WBS plan tables) and 50+ commands mapping to Meegle's core capabilities
 - **Two-Layer Parameters** — Ergonomic `--flag-name` for everyday use, fallback `--params <json>` for complex payloads like `fields[]` — pick the right granularity per call
 - **Flexible Output** — `json` / `table` / `ndjson` / `raw`, with `--select` dot-path projection for piping to other tools
 - **Secure by Default** — OS keychain credential storage, `${VAR}` env-var templating so secrets never land in config files, multi-profile switching for staging / prod
@@ -34,6 +34,9 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 | 👥 [Team & User](#team--user--people)              | List teams, team members, search users, view current login                                     |
 | 🗂️ [Projects](#project--projects)                  | Search projects by keyword                                                                     |
 | 📎 [Attachments](#attachment--attachments)         | Two-stage upload/download protocol — `prepare-*` basic commands plus `+upload` / `+download` end-to-end shortcuts |
+| 📦 [Deliverables](#deliverable--deliverables)      | List deliverables with their root and source work items                                        |
+| 🧩 [Resource Library](#resource--resource-library) | Create resource templates, inspect resource library configuration                              |
+| 🗓️ [WBS Plan Tables](#wbs--wbs-plan-tables)        | List draft / published plan rows, create / edit / publish / reset drafts, query draft progress, list element templates |
 | 🔐 [Auth & Config](#authentication)                | OAuth login, device-code flow, multi-profile config, env-var injection                         |
 | 🔗 [URL Parsing](#url--url-parsing)                | Offline decode of Meegle / Feishu Project URLs into `url_kind` + structured fields             |
 | 🤖 [Agent Skill](#ai-agent-skill)                  | Pre-built skill for Trae / Claude Code / Cursor / Windsurf / Gemini CLI / Copilot              |
@@ -253,6 +256,32 @@ The agent consults the skill, picks the right `meegle` commands, and runs them f
 | `attachment prepare-download` | Download preprocess — returns the signed object-storage URL and multipart plan |
 | `attachment +upload` | End-to-end upload: preprocess + signed HTTP POST(s); returns the resulting `file_token` and file metadata |
 | `attachment +download` | End-to-end download: preprocess + signed HTTP GET(s) + atomic write — for `file_url`s embedded in `workitem get` / `comment list` responses |
+
+### deliverable — Deliverables
+
+| Command | Description |
+|---------|-------------|
+| `deliverable list` | List deliverables with their root and source work items |
+
+### resource — Resource Library
+
+| Command | Description |
+|---------|-------------|
+| `resource create` | Create a resource template (resource instance) under a resource-library-enabled work item type |
+| `resource meta-fields` | List resource library configuration (resource fields and roles) |
+
+### wbs — WBS Plan Tables
+
+| Command | Description |
+|---------|-------------|
+| `wbs list-draft-rows` | List rows in a WBS draft, filtered by query and projected to selected fields |
+| `wbs list-instance-rows` | List rows in a published WBS instance, filtered by query and projected to selected fields |
+| `wbs create-draft` | Create a new WBS draft for a work item instance |
+| `wbs edit-draft` | Apply one atomic operation to a single draft row (add / delete / restore / sort / rename / owner / schedule); operation type via `--params` |
+| `wbs publish-draft` | Publish a WBS draft online |
+| `wbs reset-draft` | Reset a draft to match the published instance, discarding unpublished changes |
+| `wbs get-draft-progress` | Get the execution progress of a WBS draft operation (create / edit / publish) |
+| `wbs list-element-templates` | List element templates (resource nodes and tasks) from the flow resource library |
 
 ### auth — Authentication
 
