@@ -6,7 +6,6 @@ package meegle
 import (
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"fmt"
 	"os"
 	"sort"
@@ -159,7 +158,7 @@ func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDe
 			// to "not logged in" and rely on the root command's note to tell
 			// the user which knob to rotate. SDK callers (SourceUnset with an
 			// injected client) need the 401 to surface so they can react.
-			if isUnauthorizedErr(err) && s.source != SourceUnset {
+			if meerrors.IsUnauthorized(err) && s.source != SourceUnset {
 				// ClearToken only when we actually own the credential — env
 				// and config tokens must be rotated by the user out-of-band.
 				if s.source == SourceStore && s.tokenManager != nil {
@@ -168,7 +167,7 @@ func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDe
 				s.authFailed = true
 				return nil, nil
 			}
-			if isUnauthorizedErr(err) {
+			if meerrors.IsUnauthorized(err) {
 				return nil, meerrors.NewClientError("AUTH_REJECTED",
 					"token rejected by server during tool discovery").
 					WithSuggestion(meerrors.HintConfigTokenRejected)
@@ -199,20 +198,6 @@ func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDe
 		return staleTools, nil
 	}
 	return nil, nil
-}
-
-// isUnauthorizedErr reports whether err is a terminal auth error from
-// mcpclient — either a raw 401 or the AUTH_EXPIRED sentinel returned after
-// a failed refresh attempt.
-func isUnauthorizedErr(err error) bool {
-	var me *meerrors.MeegleError
-	if !stderrors.As(err, &me) {
-		return false
-	}
-	if me.HTTPStatus == 401 {
-		return true
-	}
-	return me.Code == "AUTH_EXPIRED"
 }
 
 // buildCommandTree converts a MappedCommand list into a CommandTree.

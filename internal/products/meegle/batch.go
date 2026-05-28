@@ -312,7 +312,7 @@ func (s *BatchExecutorStep) Execute(ctx context.Context, state *pipeline.Pipelin
 				params[perItemParam] = coerceValue(strconv.FormatInt(ids[idx], 10), perItemType, perItemItems)
 				resp, callErr := client.CallTool(fanCtx, toolName, params)
 				if callErr != nil {
-					if isUnauthorizedErr(callErr) {
+					if meerrors.IsUnauthorized(callErr) {
 						authMu.Lock()
 						if firstErr == nil {
 							firstErr = callErr

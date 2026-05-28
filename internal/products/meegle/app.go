@@ -274,6 +274,20 @@ func buildMcpClient(cfg MeegleConfig, profileName string) (*mcpclient.Client, Re
 		// diagnostics) even though no client could be built.
 		return nil, ident
 	}
+	return NewMCPClientFromIdentity(ident), ident
+}
+
+// NewMCPClientFromIdentity builds an MCP client directly from an already
+// resolved identity. Callers that have already resolved the identity (e.g.
+// per-command paths that read it from ResolveIdentity to inspect Source /
+// Token before deciding what to do) reuse this to avoid the redundant
+// resolution that buildMcpClient performs internally.
+//
+// Requires ident.Host and ident.Token to be non-empty; returns nil otherwise.
+func NewMCPClientFromIdentity(ident ResolvedIdentity) *mcpclient.Client {
+	if ident.Host == "" || ident.Token == "" {
+		return nil
+	}
 
 	baseURL := GetServerURL(MeegleConfig{Host: ident.Host})
 	httpHeaders := make(http.Header)
@@ -301,5 +315,5 @@ func buildMcpClient(cfg MeegleConfig, profileName string) (*mcpclient.Client, Re
 		token := ident.Token
 		opts = append(opts, mcpclient.WithToken(func() (string, error) { return token, nil }))
 	}
-	return mcpclient.New(baseURL, opts...), ident
+	return mcpclient.New(baseURL, opts...)
 }
