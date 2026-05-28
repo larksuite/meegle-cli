@@ -289,7 +289,7 @@ The agent consults the skill, picks the right `meegle` commands, and runs them f
 |---------|-------------|
 | `auth login` | Log in (browser or `--device-code`) |
 | `auth logout` | Log out |
-| `auth status` | View login status |
+| `auth status` | View login status (validates the token against the server) |
 
 ### config — Configuration
 
@@ -757,11 +757,28 @@ The terminal displays a QR code and authorization code. Scan with your phone to 
 ### Other Auth Commands
 
 ```bash
-# Check login status
+# Check login status (issues a lightweight tools/list call to validate the
+# token against the server — safe to use as a cron preflight)
 meegle auth status
 
 # Log out
 meegle auth logout
+```
+
+`auth status` exit codes and `reason` field let scripts (cron jobs, CI
+preflights) react correctly without having to parse human text:
+
+| Exit | `reason` | Meaning | Recommended action |
+|------|----------|---------|--------------------|
+| 0    | —        | Token is present locally and accepted by the server | Proceed |
+| 1    | `no local token` | No token stored | Run `meegle auth login` |
+| 1    | `token rejected by server` | Token expired or revoked; refresh exhausted | Run `meegle auth login` |
+| 2    | `server unreachable: <err>` | Network, timeout, or 5xx — the call itself failed | Retry later; do not re-login |
+
+JSON output example (`auth status --format json`) on a rejected token:
+
+```json
+{"authenticated": false, "host": "meegle.com", "reason": "token rejected by server"}
 ```
 
 ## Configuration

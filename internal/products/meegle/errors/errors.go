@@ -77,6 +77,20 @@ func NewServerError(code, message string) *MeegleError {
 	return &MeegleError{Code: code, Message: message, ExitCode: 2}
 }
 
+// IsUnauthorized reports whether err represents a terminal authentication
+// rejection from the Meegle server. mcpclient may surface this either as the
+// original 401 response or as AUTH_EXPIRED after a store-token refresh fails.
+func IsUnauthorized(err error) bool {
+	var me *MeegleError
+	if !stderrors.As(err, &me) {
+		return false
+	}
+	if me.HTTPStatus == 401 {
+		return true
+	}
+	return me.Code == "AUTH_EXPIRED"
+}
+
 // FormatText renders an error for human-readable output. When the error is
 // (or wraps) a MeegleError carrying a Suggestion, the suggestion is appended
 // on subsequent lines so users see actionable next steps. For all other

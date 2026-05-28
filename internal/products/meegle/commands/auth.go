@@ -20,7 +20,59 @@ import (
 	meegle "github.com/larksuite/meegle-cli/internal/products/meegle"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
+	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 )
+
+// statusVerifyTimeout caps how long `auth status` will wait on a single
+// server-side token validation call. The probe is a single tools/list RPC,
+// so 10s is generous; the upper bound keeps cron preflights from hanging
+// when the host is unreachable.
+const statusVerifyTimeout = 10 * time.Second
+
+// Reason strings surfaced in StatusResult.Reason and the human-readable
+// status text. Kept in one place so tests and docs agree.
+const (
+	statusReasonNoLocalToken      = "no local token"
+	statusReasonTokenRejected     = "token rejected by server"
+	statusReasonServerUnreachable = "server unreachable"
+)
+
+// tokenVerifier reports whether a resolved identity can actually authenticate
+// against the Meegle server. Returns "" on success, otherwise one of the
+// statusReason* constants (server-unreachable variants carry the underlying
+// error as a suffix). Extracted as a function value so tests substitute a
+// fake without standing up an HTTP server for every case.
+type tokenVerifier func(ctx context.Context, ident meegle.ResolvedIdentity) string
+
+// verifyTokenViaListTools is the production tokenVerifier. It builds an MCP
+// client from the resolved identity and delegates to verifyMCPClient for
+// the actual probe. Split so tests drive verifyMCPClient against an
+// httptest server, bypassing GetServerURL's hardcoded https URL.
+func verifyTokenViaListTools(ctx context.Context, ident meegle.ResolvedIdentity) string {
+	client := meegle.NewMCPClientFromIdentity(ident)
+	if client == nil {
+		// Defensive: caller should not invoke the verifier without a token,
+		// but if they do, surface a clear reason instead of a nil panic.
+		return statusReasonNoLocalToken
+	}
+	return verifyMCPClient(ctx, client)
+}
+
+// verifyMCPClient issues a single tools/list call to validate that the
+// token attached to client is still accepted by the server. Returns "" on
+// success, statusReasonTokenRejected on terminal auth rejection (raw 401 or
+// AUTH_EXPIRED after refresh fails), or a "server unreachable: <err>" wrapping
+// for any other error so users can tell connection refused apart from timeout
+// apart from 5xx without parsing logs.
+func verifyMCPClient(ctx context.Context, client *mcpclient.Client) string {
+	if _, err := client.ListTools(ctx); err != nil {
+		if meerrors.IsUnauthorized(err) {
+			return statusReasonTokenRejected
+		}
+		return statusReasonServerUnreachable + ": " + err.Error()
+	}
+	return ""
+}
 
 // normalizeHost extracts the host from a URL or returns the raw string.
 func normalizeHost(raw string) string {
@@ -316,13 +368,23 @@ func newLogoutCmd() *cobra.Command {
 }
 
 // StatusResult represents the structured auth status output.
+//
+// Reason is populated only when Authenticated is false and distinguishes
+// "no local token" (need login) from "token rejected by server" (need
+// re-login — refresh exhausted) from "server unreachable: <err>" (network
+// / timeout / 5xx — retryable). Cron preflights branch on this.
 type StatusResult struct {
 	Authenticated    bool    `json:"authenticated"`
 	Host             *string `json:"host"`
 	ExpiresInMinutes *int    `json:"expires_in_minutes,omitempty"`
+	Reason           string  `json:"reason,omitempty"`
 }
 
-func buildStatusResult(profileName string) (*StatusResult, error) {
+// buildStatusResult resolves the active identity and, when a token is
+// present locally, calls verify to confirm the token is still accepted by
+// the server. verify is injected so tests substitute a deterministic stub
+// — production paths wire verifyTokenViaListTools.
+func buildStatusResult(ctx context.Context, profileName string, verify tokenVerifier) (*StatusResult, error) {
 	cfg, err := loadConfig(profileName)
 	if err != nil {
 		return nil, err
@@ -342,6 +404,19 @@ func buildStatusResult(profileName string) (*StatusResult, error) {
 		return &StatusResult{
 			Authenticated: false,
 			Host:          host,
+			Reason:        statusReasonNoLocalToken,
+		}, nil
+	}
+
+	// Server-side validation: even if we hold a local token string, the
+	// server may have expired or revoked it. Without this probe, cron
+	// preflights see authenticated:true followed by a 401 on the next
+	// business call (the bug this command was fixing).
+	if reason := verify(ctx, ident); reason != "" {
+		return &StatusResult{
+			Authenticated: false,
+			Host:          host,
+			Reason:        reason,
 		}, nil
 	}
 
@@ -366,6 +441,19 @@ func buildStatusResult(profileName string) (*StatusResult, error) {
 	}, nil
 }
 
+// statusExitCode maps a StatusResult to the CLI exit code. Authenticated
+// → 0. Missing or rejected token → 1 (re-login needed). Server unreachable
+// → 2 (retryable; cron should retry rather than re-login).
+func statusExitCode(r *StatusResult) int {
+	if r.Authenticated {
+		return 0
+	}
+	if strings.HasPrefix(r.Reason, statusReasonServerUnreachable) {
+		return 2
+	}
+	return 1
+}
+
 func newStatusCmd() *cobra.Command {
 	var format string
 
@@ -382,53 +470,74 @@ func newStatusCmd() *cobra.Command {
 				}
 			}
 
-			result, err := buildStatusResult(profileName)
+			ctx, cancel := context.WithTimeout(cmd.Context(), statusVerifyTimeout)
+			defer cancel()
+
+			result, err := buildStatusResult(ctx, profileName, verifyTokenViaListTools)
 			if err != nil {
 				return err
 			}
-
-			if format == "json" || format == "ndjson" {
-				m := map[string]any{
-					"authenticated": result.Authenticated,
-					"host":          result.Host,
-				}
-				if result.Authenticated {
-					m["expires_in_minutes"] = result.ExpiresInMinutes
-				}
-				text, err := renderPayload(m, format)
-				if err != nil {
-					return err
-				}
-				fmt.Println(text)
-				if !result.Authenticated {
-					os.Exit(1)
-				}
-				return nil
+			renderStatus(result, profileName, format)
+			if code := statusExitCode(result); code != 0 {
+				os.Exit(code)
 			}
-
-			// Human-readable text output (table format)
-			if !result.Authenticated {
-				hostStr := ""
-				if result.Host != nil {
-					hostStr = fmt.Sprintf("\n  Host:    %s", *result.Host)
-				}
-				fmt.Printf("  Profile: %s%s\n  Status:  ✗ Not authenticated\n", profileName, hostStr)
-				os.Exit(1)
-				return nil
-			}
-
-			status := "✓ Authenticated"
-			if result.ExpiresInMinutes != nil {
-				if *result.ExpiresInMinutes <= 0 {
-					status = "✗ Token expired"
-				} else {
-					status = fmt.Sprintf("✓ Authenticated (%d minutes remaining)", *result.ExpiresInMinutes)
-				}
-			}
-			fmt.Printf("  Profile: %s\n  Status:  %s\n", profileName, status)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "json", "Output format: json, table, ndjson")
 	return cmd
+}
+
+// renderStatus writes the status to stdout in the requested format. Split
+// out so tests can assert the rendered output without intercepting os.Exit.
+func renderStatus(result *StatusResult, profileName, format string) {
+	if format == "json" || format == "ndjson" {
+		m := map[string]any{
+			"authenticated": result.Authenticated,
+			"host":          result.Host,
+		}
+		if result.Authenticated {
+			m["expires_in_minutes"] = result.ExpiresInMinutes
+		}
+		if result.Reason != "" {
+			m["reason"] = result.Reason
+		}
+		text, err := renderPayload(m, format)
+		if err != nil {
+			// renderPayload only fails on encoder bugs; surface to stderr
+			// instead of swallowing so the failure is at least visible.
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		fmt.Println(text)
+		return
+	}
+
+	// Human-readable text output (table format)
+	hostStr := ""
+	if result.Host != nil {
+		hostStr = fmt.Sprintf("\n  Host:    %s", *result.Host)
+	}
+	if !result.Authenticated {
+		label := "✗ Not authenticated"
+		switch {
+		case result.Reason == statusReasonTokenRejected:
+			label = "✗ Token rejected by server"
+		case strings.HasPrefix(result.Reason, statusReasonServerUnreachable):
+			// Reason carries the underlying error after the colon.
+			label = "✗ Server unreachable: " + strings.TrimPrefix(result.Reason, statusReasonServerUnreachable+": ")
+		}
+		fmt.Printf("  Profile: %s%s\n  Status:  %s\n", profileName, hostStr, label)
+		return
+	}
+
+	status := "✓ Authenticated"
+	if result.ExpiresInMinutes != nil {
+		if *result.ExpiresInMinutes <= 0 {
+			status = "✗ Token expired"
+		} else {
+			status = fmt.Sprintf("✓ Authenticated (%d minutes remaining)", *result.ExpiresInMinutes)
+		}
+	}
+	fmt.Printf("  Profile: %s%s\n  Status:  %s\n", profileName, hostStr, status)
 }

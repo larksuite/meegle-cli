@@ -289,7 +289,7 @@ Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--
 |------|------|
 | `auth login` | 登录（浏览器或 `--device-code`） |
 | `auth logout` | 登出 |
-| `auth status` | 查看登录状态 |
+| `auth status` | 查看登录状态（会向服务端发一次校验请求，确认 token 真实可用） |
 
 ### config — 配置域
 
@@ -734,11 +734,28 @@ meegle auth login --device-code
 ### 其他认证命令
 
 ```bash
-# 查看登录状态
+# 查看登录状态（会向服务端发一次轻量 tools/list 调用校验 token，可作为
+# cron 任务的 preflight）
 meegle auth status
 
 # 登出
 meegle auth logout
+```
+
+`auth status` 退出码与 `reason` 字段配合，让 cron / CI preflight 脚本
+不用解析人类可读文本即可分支处理：
+
+| 退出码 | `reason` | 含义 | 建议动作 |
+|--------|----------|------|----------|
+| 0      | —        | 本地有 token 且服务端校验通过 | 继续执行 |
+| 1      | `no local token` | 本地无 token | 执行 `meegle auth login` |
+| 1      | `token rejected by server` | token 已过期或被撤销（refresh 也救不回来） | 执行 `meegle auth login` |
+| 2      | `server unreachable: <err>` | 网络、超时、5xx —— 调用本身失败 | 稍后重试，不要重新登录 |
+
+JSON 输出示例（`auth status --format json`），token 被拒：
+
+```json
+{"authenticated": false, "host": "meegle.com", "reason": "token rejected by server"}
 ```
 
 ## 配置

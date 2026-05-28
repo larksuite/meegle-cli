@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.6] - 2026-05-28
+
+### Changed
+
+- `auth status` now issues a lightweight `tools/list` call to validate the token against the server, instead of only checking whether a token string is present locally. Cron / CI preflights that previously saw `authenticated: true` followed by an immediate `401` on the next business call now get the correct verdict up front. JSON output gains a `reason` field on failure (`no local token` / `token rejected by server` / `server unreachable: <err>`). A new exit code `2` indicates the server was unreachable (network, timeout, 5xx) — distinct from exit `1` which still covers missing or rejected tokens. There is no opt-out flag: offline status inspection is intentionally no longer supported.
+
 ## [v1.0.5] - 2026-05-20
 
 ### Added
