@@ -25,13 +25,10 @@ func main() {
 	// what backends observe today (e.g. "meegle-cli/v0.0.0-…+dirty").
 	mcpclient.SetVersion(version)
 
-	// Resolve mapped commands for the inspect command
-	mappedCommands := productmeegle.ResolveMappedCommands()
-
 	app, err := productmeegle.NewCLIApp(version, &productmeegle.StaticCommands{
 		Auth:       commands.NewAuthCmd(),
 		Config:     commands.NewConfigCmd(),
-		Inspect:    commands.NewInspectCmd(mappedCommands),
+		Inspect:    commands.NewInspectCmdWithProvider(productmeegle.ResolveMappedCommands),
 		Completion: commands.NewCompletionCmd(),
 		URL:        commands.NewURLCmd(),
 	})

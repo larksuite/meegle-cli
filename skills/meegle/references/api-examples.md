@@ -43,6 +43,18 @@ meegle workitem meta-roles --page-num 1 --project-key 空间key --work-item-type
 meegle workitem query --project-key 空间key --session-id {{session_id}} --mql 'SELECT `work_item_id`, `name`, `current_owners`, `status` FROM `空间名`.`story` WHERE `is_archived` = 0' --group-pagination-list '{{group_pagination_list}}' --format json
 ```
 
+继续查询无分组结果的第 2 页（无分组时 `group_id` 传 `"1"`，`session_id` 使用上一次查询返回值）：
+
+```bash
+meegle workitem query --project-key 空间key --session-id 上次返回的session_id --mql '' --group-pagination-list '[{"group_id":"1","page_num":2}]' --format json
+```
+
+继续查询某个分组的第 3 页（`group_id` 来自首查返回的 `list[].group_infos[].group_id`）：
+
+```bash
+meegle workitem query --project-key 空间key --session-id 上次返回的session_id --mql '' --group-pagination-list '[{"group_id":"分组ID","page_num":3}]' --format json
+```
+
 ### workitem get
 ```bash
 meegle workitem get --work-item-id 工作项ID或名称 --fields '{{fields}}' --project-key 空间key --format json

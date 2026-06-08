@@ -12,12 +12,24 @@ import (
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 )
 
+type InspectCommandProvider func() []types.MappedCommand
+
 func NewInspectCmd(mappedCommands []types.MappedCommand) *cobra.Command {
+	return NewInspectCmdWithProvider(func() []types.MappedCommand {
+		return mappedCommands
+	})
+}
+
+func NewInspectCmdWithProvider(provider InspectCommandProvider) *cobra.Command {
+	if provider == nil {
+		provider = func() []types.MappedCommand { return nil }
+	}
 	return &cobra.Command{
 		Use:   "inspect [command]",
 		Short: "Show parameter details for a command (e.g. inspect workitem.create)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			mappedCommands := provider()
 			if len(args) == 0 {
 				return inspectListAll(mappedCommands)
 			}

@@ -91,6 +91,7 @@ func NewCLIApp(version string, staticCmds *StaticCommands) (*cliapp.App, error) 
 		WithTokenManager(ident.TokenManager),
 		WithIdentitySource(ident.Source),
 		WithForceRefresh(forceRefresh),
+		WithDiscoveryFailureDegradation(true),
 	)
 
 	// 5. Placeholder executor (pipeline already contains McpExecutorStep; this is just a fallback)

@@ -78,7 +78,13 @@ description: |
 | --project-key | string | 是 | 空间标识（支持名称、simpleName、projectKey） |
 | --mql | string | 是（翻页时可用 session_id 替代） | MQL 查询语句（完整 SQL） |
 | --session-id | string | 否 | 分页会话 ID，传入后不解析 MQL 直接翻页 |
-| --group-pagination-list | array | 否 | 分页信息，首次查询可不传 |
+| --group-pagination-list | array | 否 | 分组分页信息，首次查询可不传；翻页时传 `[{ "group_id": "分组ID", "page_num": 页码 }]` |
+
+**分组分页**：
+- `--group-pagination-list` 是数组，当前只支持传一组分页数据；元素结构为 `{ "group_id": string, "page_num": number }`
+- `group_id` 取首查返回的 `list[].group_infos[].group_id`；无分组查询返回的默认分组 ID 为 `"1"`，翻页时也传 `"1"`
+- `page_num` 从 1 开始；MQL 首查不传分页参数时默认返回第一页，单页最多 50 条。当前接口没有 `page_size` / `page_token` 子字段
+- 翻页时传首查返回的 `session_id` 和目标分组的分页参数；传 `session_id` 后后端不再解析 MQL，只按已有会话取对应分组页
 
 **要点**：
 - 先用 `workitem meta-fields` / `workitem meta-roles` 获取字段与角色配置；查不到直接报错不要继续
@@ -246,10 +252,14 @@ description: |
 
 ## Resource 资源库
 
-> 资源库（资源模板）管理。`resource create` 创建资源实例；查看资源库的字段 / 角色配置用 `resource meta-fields`。详细参数表见 [references/misc.md](references/misc.md)。
+> 资源库（资源模板）管理。`resource create` 当前对应 MCP `create_resource_work_item`，用于创建资源实例；查看资源库的字段 / 角色配置用 `resource meta-fields`。详细参数表见 [references/misc.md](references/misc.md)。
 
 ### resource create
 在已启用资源库的工作项类型下创建资源模板（资源实例）。创建前先调 `resource meta-fields` 取字段 / 角色配置。
+
+**语义边界**：
+- 创建资源实例：`work_item_type_key` 是资源库启用的工作项类型；`template_id` 是该类型下的流程模板 ID/名称；`fields` / `roles` 是新资源实例自身的字段和角色。
+- 从资源实例创建普通工作项：不要把已有资源实例 ID 填到 `work_item_type_key` 或 `template_id`。必须以当前 `resource create` 的 inspect/schema 为准确认是否有源资源实例参数；若当前 schema 未暴露该参数，先向用户说明无法确认自动化参数，不要猜。
 
 ---
 

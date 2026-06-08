@@ -85,15 +85,41 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 
 传入 `mode = "unfinished"` 仅查未完成必填项。从返回中识别每个字段的 `form_item_type`（node_field / field）和 `field_type`。
 
-**4.2 硬拦截：不可写入的字段类型**
+**4.2 评审结论 / 评审意见（`node_finished_conclusion` / `node_finished_opinion`）**
+
+这是节点的「整体完成结论 / 意见」，可经接口读写，但**前提是该节点已启用这两个字段**——只有节点开了「完成结论」配置，`workflow get-node` 的 `form_items` 里才会出现它们；没启用时写入会报 `node field is invalid`。所以**先读 `form_items` 确认字段存在，再写**。
+
+**读取**：用 `workflow get-node` 按 `field_key_list` 读，或用 `workitem get` 按 `fields` 读。字段未启用时返回里不会出现对应项：
+
+```bash
+meegle workflow get-node --work-item-id 工作项ID --field-key-list '["node_finished_conclusion","node_finished_opinion"]' --need-sub-task {{need_sub_task}} --page-num {{page_num}} --project-key 空间key --node-id-list '["节点node_key"]' --format json
+```
+
+**查询结论选项**：结论是 select 型，用 `workflow meta-node-fields` 查 options，写入用其 `option_id`：
+
+```bash
+meegle workflow meta-node-fields --field-keys '["node_finished_conclusion"]' --field-types '{{field_types}}' --project-key 空间key --work-item-type 类型key --query '{{query}}' --format json
+```
+
+**写入**：经 `workflow update-node` 的 `fields` 写入——结论写合法 `option_id`，意见写文本。
+
+> 🚨 **必须分两次调用，一次只写一个字段。** `workflow update-node` 的 `fields` 数组里如果同时放结论和意见，**只有第一个字段会落库，其余被静默丢弃**（返回仍是 `success`）。这和「排期 / 负责人不要同时改」是同一类约束。每次写完都要 `workflow get-node` 回读校验，不要凭返回的 success 断言已写入。
+
+```bash
+meegle workflow update-node --work-item-id 工作项ID --node-schedule '{{node_schedule}}' --schedules '{{schedules}}' --fields '[{"field_key":"node_finished_conclusion","field_value":"option_id"}]' --project-key 空间key --node-id 节点node_key --node-owners '{{node_owners}}' --format json
+```
+
+```bash
+meegle workflow update-node --work-item-id 工作项ID --node-schedule '{{node_schedule}}' --schedules '{{schedules}}' --fields '[{"field_key":"node_finished_opinion","field_value":"评审意见文本"}]' --project-key 空间key --node-id 节点node_key --node-owners '{{node_owners}}' --format json
+```
+
+**4.3 硬拦截：不可写入的字段类型**
 
 以下字段类型 **API 无法写入**。如果被设为流转必填项，**立即中断当前节点的流转**并告知用户：
 
 | 字段类型 | 说明 | 拦截原因 |
 |---|---|---|
 | `actual_work_time` | 实际工时 | 需在页面手动登记 |
-| `node_finished_conclusion` | 整体完成结论 | `update_node` 静默忽略，返回 success 但实际未写入 |
-| `node_finished_opinion` | 整体完成意见 | `update_node` 静默忽略，返回 success 但实际未写入 |
 | `owners_finished_info` | 负责人完成结论与意见 | 仅各负责人可在页面操作 |
 | `vote-boolean` / `vote-option` / `vote-option-multi` | 投票类 | 仅支持页面交互 |
 | `compound_field` / `multi_user_compound_field` | 复合明细表 | API 暂不支持 |
@@ -102,7 +128,7 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 🚨 遇到硬拦截时输出：
 > "节点流转失败。当前节点【节点名称】设置了必须填写【字段名称】（类型：xxx）才能流转。由于该字段类型不支持自动化补充，请您在飞书项目页面手动填写后，再通知我继续流转。"
 
-**4.3 可补充字段的值转换**
+**4.4 可补充字段的值转换**
 
 **人员字段处理规则（极重要）：**
 - 用户明确指定了人员 → `user search` 转 userkey
@@ -119,6 +145,8 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 | `point` (number) | `node_schedule` 中的 `points` 字段 |
 
 > 清空节点负责人时传空数组 `[]`（不是 `["_all"]`，`["_all"]` 仅用于 `update_field` 中删除角色配置）。
+
+> 评审结论 / 意见（`node_finished_conclusion` / `node_finished_opinion`）的读写口径见 §4.2：需节点已启用该字段，且**结论与意见必须分两次 `update-node` 调用**（一次只落第一个字段）。
 
 **通用字段类型转换**（完整格式见主文档 [SKILL.md](../SKILL.md)「字段值格式」）：
 
@@ -152,7 +180,7 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 - `form_item_type = "field"` → `workitem update`（工作项级别）
 - 节点枚举值用 `workflow meta-node-fields` 查询；工作项枚举值用 `workitem meta-fields` 查询（用 `field_keys` 精确或 `field_query` 模糊搜索，禁止逐页遍历）
 
-**4.4 字段补充执行策略**
+**4.5 字段补充执行策略**
 
 🚨 **效率要求**：一轮对话内并行完成所有必填字段补充。
 
@@ -161,7 +189,7 @@ meegle workflow list-state-required --work-item-id 工作项ID --state-key 目�
 3. 其他节点字段通过 `workflow update-node` 的 `fields` 参数批量更新
 4. 工作项字段通过 `workitem update` 的 `fields` 参数批量更新
 
-**4.5 用户未提供值时**：
+**4.6 用户未提供值时**：
 - 人员类 → **必须询问**
 - 排期/日期类 → **询问用户**
 - 枚举类 → 列出选项让用户选

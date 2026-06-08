@@ -6,6 +6,7 @@ package meegle
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"sort"
@@ -19,33 +20,47 @@ import (
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 )
 
-// resourceDescriptions provides a description for each resource group.
+// resourceDescriptions provides optional help text for each resource group.
+// It is description-only metadata: lookups fall back to a generated default
+// when a group is absent, so it must NOT be treated as the authoritative list
+// of domains (that list comes from dynamic.FallbackResources).
 var resourceDescriptions = map[string]string{
-	"workitem":   "Work Item domain — CRUD, field metadata, time tracking, comments",
-	"workflow":   "Workflow domain — node transitions, state transitions, node fields",
-	"subtask":    "Subtask domain — subtask operations",
-	"comment":    "Comment domain — cross-entity commenting",
-	"workhour":   "Work Hour domain — time tracking and scheduling",
-	"relation":   "Relation domain — work item relationships",
-	"mywork":     "My Work domain — cross-space personal to-do/done items",
-	"view":       "View domain — create, query, update views",
-	"chart":      "Chart domain — chart queries",
-	"team":       "Team domain — space members, team queries",
-	"user":       "User domain — user information search",
-	"project":    "Project domain — project space queries",
-	"attachment": "Attachment domain — upload/download files via Lark Project attachment protocol",
+	"workitem":    "Work Item domain — CRUD, field metadata, time tracking, comments",
+	"workflow":    "Workflow domain — node transitions, state transitions, node fields",
+	"subtask":     "Subtask domain — subtask operations",
+	"comment":     "Comment domain — cross-entity commenting",
+	"workhour":    "Work Hour domain — time tracking and scheduling",
+	"relation":    "Relation domain — work item relationships",
+	"mywork":      "My Work domain — cross-space personal to-do/done items",
+	"view":        "View domain — create, query, update views",
+	"chart":       "Chart domain — chart queries",
+	"team":        "Team domain — space members, team queries",
+	"user":        "User domain — user information search",
+	"project":     "Project domain — project space queries",
+	"attachment":  "Attachment domain — upload/download files via Lark Project attachment protocol",
+	"deliverable": "Deliverable domain — deliverable listing and related work item context",
+	"wbs":         "WBS domain — plan-table draft and instance workflows",
+	"resource":    "Resource domain — resource-library template (resource instance) operations",
 }
+
+const (
+	discoveryFailureHandlerRef      = "__meegle_tool_discovery_failed__"
+	tagDiscoveryFailure             = "meegle_discovery_failure"
+	tagRouterAllowUnknownFlags      = "router_allow_unknown_flags"
+	discoveryFailureFallbackVersion = "dynamic-discovery-failed"
+)
 
 // DynamicRegistrySetup builds the command tree via MCP dynamic discovery.
 type DynamicRegistrySetup struct {
-	client       discovery.ToolLister
-	cache        *ToolCache
-	tokenManager *auth.TokenManager
-	source       IdentitySource
-	globalFlags  []registry.FlagDef
-	commands     []types.MappedCommand // populated by Setup, read by pipeline steps
-	authFailed   bool                  // set when tool discovery fails due to 401 (expired/revoked token)
-	forceRefresh bool                  // when true, bypass fresh cache and fetch from server
+	client                   discovery.ToolLister
+	cache                    *ToolCache
+	tokenManager             *auth.TokenManager
+	source                   IdentitySource
+	globalFlags              []registry.FlagDef
+	commands                 []types.MappedCommand // populated by Setup, read by pipeline steps
+	authFailed               bool                  // set when tool discovery fails due to 401 (expired/revoked token)
+	forceRefresh             bool                  // when true, bypass fresh cache and fetch from server
+	degradeDiscoveryFailures bool                  // CLI startup only: keep static commands bootable on non-auth discovery errors
 }
 
 // RegistryOption configures optional parameters for DynamicRegistrySetup.
@@ -85,6 +100,15 @@ func WithForceRefresh(force bool) RegistryOption {
 	}
 }
 
+// WithDiscoveryFailureDegradation keeps CLI bootstrap alive when the server is
+// unreachable and no cache exists. SDK callers should keep the default hard
+// failure so programmatic clients can handle discovery errors explicitly.
+func WithDiscoveryFailureDegradation(enabled bool) RegistryOption {
+	return func(s *DynamicRegistrySetup) {
+		s.degradeDiscoveryFailures = enabled
+	}
+}
+
 // IdentitySource reports the source of the active token (for external
 // callers that want to render source-specific hints after Setup runs).
 func (s *DynamicRegistrySetup) IdentitySource() IdentitySource {
@@ -108,6 +132,12 @@ func NewDynamicRegistrySetup(client discovery.ToolLister, cache *ToolCache, opts
 func (s *DynamicRegistrySetup) Setup(ctx context.Context) (*registry.CommandTree, error) {
 	tools, err := s.resolveTools(ctx)
 	if err != nil {
+		if s.degradeDiscoveryFailures && !isUnauthorizedErr(err) {
+			s.commands = nil
+			tree := buildDiscoveryFailureTree(err)
+			tree.GlobalFlags = s.globalFlags
+			return tree, nil
+		}
 		return nil, err
 	}
 	commands := dynamic.MapTools(tools)
@@ -198,6 +228,61 @@ func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDe
 		return staleTools, nil
 	}
 	return nil, nil
+}
+
+func buildDiscoveryFailureTree(err error) *registry.CommandTree {
+	// Derive the domain list from the static fallback table — the authoritative
+	// set of business domains the CLI knows — so every real domain gets a clean
+	// TOOL_DISCOVERY_FAILED placeholder. resourceDescriptions only supplies help
+	// text and must NOT gate which domains are covered (a domain missing from it
+	// previously fell through to "unknown command").
+	groupNames := dynamic.FallbackResources()
+
+	nodes := make([]*registry.CommandNode, 0, len(groupNames))
+	errText := strings.TrimSpace(fmt.Sprint(err))
+	for _, name := range groupNames {
+		desc := resourceDescriptions[name]
+		if desc == "" {
+			desc = fmt.Sprintf("%s domain", name)
+		}
+		nodes = append(nodes, &registry.CommandNode{
+			Name: name,
+			Help: registry.HelpText{
+				Brief: desc,
+				Long:  "Dynamic Meegle commands are unavailable because tool discovery failed.",
+			},
+			Args: []registry.ArgDef{{
+				Name:     "command-and-flags",
+				Variadic: true,
+			}},
+			HandlerRef: discoveryFailureHandlerRef,
+			Meta: registry.NodeMeta{
+				Hidden: true,
+				Tags: map[string]string{
+					tagDiscoveryFailure:        errText,
+					tagRouterAllowUnknownFlags: "1",
+				},
+			},
+		})
+	}
+	return &registry.CommandTree{
+		Version: discoveryFailureFallbackVersion,
+		Nodes:   nodes,
+	}
+}
+
+// isUnauthorizedErr reports whether err is a terminal auth error from
+// mcpclient — either a raw 401 or the AUTH_EXPIRED sentinel returned after
+// a failed refresh attempt.
+func isUnauthorizedErr(err error) bool {
+	var me *meerrors.MeegleError
+	if !stderrors.As(err, &me) {
+		return false
+	}
+	if me.HTTPStatus == 401 {
+		return true
+	}
+	return me.Code == "AUTH_EXPIRED"
 }
 
 // buildCommandTree converts a MappedCommand list into a CommandTree.

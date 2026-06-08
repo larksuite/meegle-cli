@@ -3,7 +3,11 @@
 
 package dynamic
 
-import "github.com/larksuite/meegle-cli/internal/products/meegle/types"
+import (
+	"sort"
+
+	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
+)
 
 type fallbackEntry struct {
 	resource    string
@@ -122,4 +126,23 @@ func MapTools(tools []types.ToolDefinition) []types.MappedCommand {
 		cmds = append(cmds, cmd)
 	}
 	return cmds
+}
+
+// FallbackResources returns the sorted, de-duplicated set of resource (command
+// group) names known to the static fallback table. It is the authoritative list
+// of business domains the CLI can map offline, so callers that need to enumerate
+// every domain without a live tool list (e.g. the discovery-failure placeholder
+// tree) should derive it from here rather than hand-maintaining a parallel list.
+func FallbackResources() []string {
+	seen := make(map[string]struct{}, len(fallbackTable))
+	resources := make([]string, 0, len(fallbackTable))
+	for _, entry := range fallbackTable {
+		if _, ok := seen[entry.resource]; ok {
+			continue
+		}
+		seen[entry.resource] = struct{}{}
+		resources = append(resources, entry.resource)
+	}
+	sort.Strings(resources)
+	return resources
 }

@@ -893,6 +893,7 @@ meegle auth login
 ```
 
 The command list is cached automatically and refreshed silently in the background when expired.
+When server-side command discovery fails with no usable cache, local commands such as `auth`, `config`, `inspect`, `completion`, and `url` still start normally; dynamic business commands report a `TOOL_DISCOVERY_FAILED` server error until connectivity recovers.
 
 ## Security & Risk Warnings
 

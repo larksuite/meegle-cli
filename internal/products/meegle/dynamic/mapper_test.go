@@ -164,3 +164,32 @@ func TestUnmappedToolReturnsEmptyDescription(t *testing.T) {
 		t.Errorf("expected empty description for unmapped tool, got %q", cmd.Description)
 	}
 }
+
+func TestFallbackResources(t *testing.T) {
+	got := FallbackResources()
+
+	// Strictly sorted and de-duplicated.
+	for i := 1; i < len(got); i++ {
+		if got[i-1] >= got[i] {
+			t.Fatalf("FallbackResources not strictly sorted/unique: %v", got)
+		}
+	}
+
+	// Must cover exactly the distinct resources in the fallback table.
+	want := map[string]struct{}{}
+	for _, entry := range fallbackTable {
+		want[entry.resource] = struct{}{}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("FallbackResources len = %d, want %d distinct resources", len(got), len(want))
+	}
+	for _, r := range got {
+		if _, ok := want[r]; !ok {
+			t.Errorf("unexpected resource %q", r)
+		}
+	}
+	// "resource" is a real domain that was historically easy to miss.
+	if _, ok := want["resource"]; !ok {
+		t.Fatal("fallback table missing resource domain")
+	}
+}

@@ -870,6 +870,7 @@ meegle auth login
 ```
 
 命令列表会自动缓存，过期后在后台静默刷新，不影响使用。
+当服务端命令发现失败且没有可用缓存时，`auth`、`config`、`inspect`、`completion`、`url` 等本地命令仍会正常启动；动态业务命令会返回 `TOOL_DISCOVERY_FAILED` 服务端错误，直到网络恢复。
 
 ## 安全与风险提示
 
