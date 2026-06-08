@@ -121,6 +121,10 @@
 ### resource create
 在已启用资源库的工作项类型下创建资源模板（资源实例）。先调 `resource meta-fields` 取字段 / 角色配置。
 
+**创建资源实例 vs 从资源实例创建普通工作项**：
+- 创建资源实例：使用 `resource create`；`work_item_type_key` 表示资源库启用的工作项类型，`template_id` 表示流程模板，`fields` / `roles` 描述新资源实例自身。
+- 从资源实例创建普通工作项：这是“基于已有资源实例派生/创建业务工作项”的语义，参数通常需要源资源实例标识。当前命令参数必须以 `inspect` / schema 为准；若没有显式源资源实例参数，不要把源资源实例 ID 塞进 `work_item_type_key`、`template_id` 或普通字段里猜测调用。
+
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | --project-key | string | 是 | 空间 key |

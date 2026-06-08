@@ -165,6 +165,9 @@ func (r *CommandRouter) registerNode(parent *cobra.Command, node *registry.Comma
 		Hidden:     node.Meta.Hidden,
 		Deprecated: node.Meta.Deprecated,
 	}
+	if node.Meta.Tags["router_allow_unknown_flags"] == "1" {
+		cmd.FParseErrWhitelist.UnknownFlags = true
+	}
 	cmd.Annotations = map[string]string{"command_path": node.FullPathString()}
 	for _, flag := range node.Flags {
 		registerFlag(cmd.PersistentFlags(), flag)

@@ -4,15 +4,20 @@
 package meegle
 
 import (
+	"bytes"
 	"context"
 	stderrors "errors"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
+	"github.com/larksuite/meegle-cli/internal/products/meegle/dynamic"
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
+	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
 
 // unauthorizedLister is a ToolLister stub that always returns a 401 MeegleError,
@@ -162,6 +167,169 @@ func TestDynamicRegistrySetup_GracefulNoClient(t *testing.T) {
 	}
 	if len(tree.Nodes) != 0 {
 		t.Errorf("expected 0 nodes (no MCP discovery), got %d", len(tree.Nodes))
+	}
+}
+
+func TestDynamicRegistrySetup_DiscoveryErrorWithoutDegradationHardFails(t *testing.T) {
+	lister := &errorLister{err: stderrors.New("network unreachable")}
+	setup := NewDynamicRegistrySetup(lister, nil)
+
+	_, err := setup.Setup(context.Background())
+	if err == nil {
+		t.Fatal("expected discovery error without CLI degradation")
+	}
+	if !strings.Contains(err.Error(), "tool discovery failed") {
+		t.Fatalf("expected tool discovery failure, got: %v", err)
+	}
+}
+
+func TestDynamicRegistrySetup_DegradesDiscoveryErrorToPlaceholderTree(t *testing.T) {
+	lister := &errorLister{err: stderrors.New("network unreachable")}
+	setup := NewDynamicRegistrySetup(lister, nil,
+		WithGlobalFlags(MeegleGlobalFlags),
+		WithDiscoveryFailureDegradation(true),
+	)
+
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatalf("expected CLI degradation, got error: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected non-nil placeholder tree")
+	}
+	if tree.Version != discoveryFailureFallbackVersion {
+		t.Fatalf("expected fallback tree version, got %q", tree.Version)
+	}
+	if len(tree.GlobalFlags) == 0 {
+		t.Error("expected global flags to stay registered")
+	}
+	workitem := findNodeByName(tree.Nodes, "workitem")
+	if workitem == nil {
+		t.Fatal("expected workitem placeholder node")
+	}
+	if workitem.HandlerRef != discoveryFailureHandlerRef {
+		t.Errorf("expected discovery failure handler, got %q", workitem.HandlerRef)
+	}
+	if workitem.Meta.Tags[tagRouterAllowUnknownFlags] != "1" {
+		t.Error("expected placeholder to allow unknown business flags")
+	}
+	if !strings.Contains(workitem.Meta.Tags[tagDiscoveryFailure], "network unreachable") {
+		t.Errorf("expected original error in placeholder tag, got %q", workitem.Meta.Tags[tagDiscoveryFailure])
+	}
+}
+
+// The placeholder tree must cover every business domain the CLI knows about,
+// otherwise an unlisted domain falls through to cobra's "unknown command"
+// instead of the clean TOOL_DISCOVERY_FAILED error. Deriving the domains from
+// dynamic.FallbackResources keeps this complete as new tools are added; this
+// test guards against regressing to a hand-maintained subset.
+func TestDegradesDiscoveryError_CoversEveryFallbackDomain(t *testing.T) {
+	lister := &errorLister{err: stderrors.New("network unreachable")}
+	setup := NewDynamicRegistrySetup(lister, nil,
+		WithDiscoveryFailureDegradation(true),
+	)
+
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatalf("expected CLI degradation, got error: %v", err)
+	}
+
+	domains := dynamic.FallbackResources()
+	if len(tree.Nodes) != len(domains) {
+		t.Fatalf("placeholder node count = %d, want %d (one per fallback domain)", len(tree.Nodes), len(domains))
+	}
+	for _, name := range domains {
+		node := findNodeByName(tree.Nodes, name)
+		if node == nil {
+			t.Errorf("missing placeholder node for domain %q", name)
+			continue
+		}
+		if node.HandlerRef != discoveryFailureHandlerRef {
+			t.Errorf("domain %q: handler = %q, want discovery-failure handler", name, node.HandlerRef)
+		}
+	}
+	// "resource" specifically regressed before this guard existed.
+	if findNodeByName(tree.Nodes, "resource") == nil {
+		t.Error("expected resource domain to have a placeholder node")
+	}
+}
+
+func TestCLIApp_DiscoveryErrorStillAllowsStaticCommand(t *testing.T) {
+	lister := &errorLister{err: stderrors.New("network unreachable")}
+	setup := NewDynamicRegistrySetup(lister, nil,
+		WithGlobalFlags(MeegleGlobalFlags),
+		WithDiscoveryFailureDegradation(true),
+	)
+	ran := false
+	authCmd := &cobra.Command{Use: "auth"}
+	authCmd.AddCommand(&cobra.Command{
+		Use: "status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ran = true
+			_, _ = cmd.OutOrStdout().Write([]byte("static ok\n"))
+			return nil
+		},
+	})
+
+	app, err := cliapp.New(
+		cliapp.WithAppName("meegle"),
+		cliapp.WithVersion("test"),
+		cliapp.WithSetup(setup),
+		cliapp.WithPipelineFactory(newPipelineFactory(setup)),
+		cliapp.WithRootCommandCustomizer(rootCustomizer(&StaticCommands{Auth: authCmd}, nil, setup)),
+	)
+	if err != nil {
+		t.Fatalf("expected app bootstrap to succeed, got: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = app.ExecuteWithIO(context.Background(), []string{"auth", "status"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("expected static command to run, got: %v\nstderr=%s", err, stderr.String())
+	}
+	if !ran {
+		t.Fatal("expected static command handler to run")
+	}
+	if !strings.Contains(stdout.String(), "static ok") {
+		t.Fatalf("expected static command output, got: %q", stdout.String())
+	}
+}
+
+func TestCLIApp_DiscoveryErrorDynamicCommandReturnsClearError(t *testing.T) {
+	lister := &errorLister{err: stderrors.New("network unreachable")}
+	setup := NewDynamicRegistrySetup(lister, nil,
+		WithGlobalFlags(MeegleGlobalFlags),
+		WithDiscoveryFailureDegradation(true),
+	)
+	app, err := cliapp.New(
+		cliapp.WithAppName("meegle"),
+		cliapp.WithVersion("test"),
+		cliapp.WithSetup(setup),
+		cliapp.WithPipelineFactory(newPipelineFactory(setup)),
+	)
+	if err != nil {
+		t.Fatalf("expected app bootstrap to succeed, got: %v", err)
+	}
+
+	_, err = app.Invoke(context.Background(), []string{"workitem", "create", "--project-key", "P", "--dry-run"})
+	if err == nil {
+		t.Fatal("expected dynamic command discovery error")
+	}
+	var me *meerrors.MeegleError
+	if !stderrors.As(err, &me) {
+		t.Fatalf("expected MeegleError, got %T: %v", err, err)
+	}
+	if me.Code != "TOOL_DISCOVERY_FAILED" {
+		t.Fatalf("expected TOOL_DISCOVERY_FAILED, got %q", me.Code)
+	}
+	if me.ExitCode != 2 {
+		t.Fatalf("expected server-unreachable exit code 2, got %d", me.ExitCode)
+	}
+	if !strings.Contains(me.Message, "workitem create") || !strings.Contains(me.Message, "network unreachable") {
+		t.Fatalf("expected command and original error in message, got: %s", me.Message)
+	}
+	if !strings.Contains(me.Suggestion, "auth status") {
+		t.Fatalf("expected suggestion to mention local commands, got: %s", me.Suggestion)
 	}
 }
 

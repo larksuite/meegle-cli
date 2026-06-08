@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.7] - 2026-06-09
+
+### Fixed
+
+- `meegle` now keeps local commands (`auth`, `config`, `inspect`, `completion`, `url`) bootable when server-side tool discovery fails and no command cache exists. Dynamic business commands now return a clear `TOOL_DISCOVERY_FAILED` server error instead of causing CLI bootstrap to fail before local command handlers can run.
+
 ## [v1.0.6] - 2026-05-28
 
 ### Changed

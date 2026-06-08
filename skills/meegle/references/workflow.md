@@ -23,9 +23,12 @@
 | --mode | string | 否 | 默认查所有必填项；传 `unfinished` 仅查未完成必填项 |
 
 ## workflow meta-node-fields
-查看节点字段配置。`workflow update-node` 修改节点自定义字段前用来确认合法 field_key。
+查看节点字段配置。`workflow update-node` 修改节点自定义字段前用来确认合法 field_key、字段类型与 options。查询评审结论选项时按 `field_keys=["node_finished_conclusion"]` 精确查询，并从返回配置的 options / 选项列表中取合法值。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | --project-key | string | 是 | 空间 key |
 | --work-item-type | string | 是 | 工作项类型 |
+| --field-keys | array | 否 | 精确匹配节点字段 key 或名称，如 `["node_finished_conclusion"]` |
+| --field-types | array | 否 | 按节点字段类型筛选 |
+| --query | string | 否 | 按字段 name / key 模糊搜索 |

@@ -212,6 +212,9 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 	if toolName == "" {
 		return nil // group node, no execution needed
 	}
+	if toolName == discoveryFailureHandlerRef {
+		return discoveryFailureCommandError(state)
+	}
 
 	if state.Values == nil {
 		state.Values = pipeline.BuildInputValues(state.Parsed)
@@ -312,6 +315,34 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 		}
 	}
 	return nil
+}
+
+func discoveryFailureCommandError(state *pipeline.PipelineContext) error {
+	command := ""
+	if state != nil && state.Parsed != nil {
+		parts := append([]string(nil), state.Parsed.FullPath...)
+		for _, arg := range state.Parsed.Args {
+			if strings.HasPrefix(arg, "-") {
+				break
+			}
+			parts = append(parts, arg)
+		}
+		command = strings.TrimSpace(strings.Join(parts, " "))
+	}
+	if command == "" {
+		command = "dynamic command"
+	}
+
+	detail := ""
+	if state != nil && state.Parsed != nil && state.Parsed.Node != nil {
+		detail = strings.TrimSpace(state.Parsed.Node.Meta.Tags[tagDiscoveryFailure])
+	}
+	message := fmt.Sprintf("tool discovery failed; dynamic Meegle command %q is unavailable", command)
+	if detail != "" {
+		message += ": " + detail
+	}
+	return meerrors.NewServerError("TOOL_DISCOVERY_FAILED", message).
+		WithSuggestion("Check Meegle server connectivity, then retry with `meegle --refresh <command>`. Local commands such as `meegle auth status`, `meegle config`, `meegle inspect`, `meegle completion`, and `meegle url` remain available.")
 }
 
 // isDryRunFlag reports whether --dry-run was passed. Lives at package scope so
