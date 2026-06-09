@@ -64,16 +64,22 @@ meegle workitem get --work-item-id 工作项ID或名称 --fields '{{fields}}' --
 基础创建（仅标量字段）：
 
 ```bash
-meegle workitem create --work-item-type story --fields '[{"field_key": "template", "field_value": "模板ID"}, {"field_key": "name", "field_value": "需求标题"}]' --project-key 空间key --format json
+meegle workitem create --work-item-type story --fields '[{"field_key": "template", "field_value": "模板ID"}, {"field_key": "name", "field_value": "需求标题"}]' --project-key 空间key --work-item-id {{work_item_id}} --ignore-required {{ignore_required}} --ignore-role-calculate {{ignore_role_calculate}} --format json
 ```
 
 创建缺陷 + 指定报告人（multi-user）+ 指定经办人（role_owners）——注意复合值必须 JSON.stringify：
 
 ```bash
-meegle workitem create --work-item-type issue --fields '[{"field_key":"name","field_value":"示例缺陷"},{"field_key":"priority","field_value":"2"},{"field_key":"template","field_value":"模板ID"},{"field_key":"issue_reporter","field_value":"["userkey1"]"},{"field_key":"role_owners","field_value":"[{"role":"operator","owners":["userkey1"]}]"}]' --project-key 空间key --format json
+meegle workitem create --work-item-type issue --fields '[{"field_key":"name","field_value":"示例缺陷"},{"field_key":"priority","field_value":"2"},{"field_key":"template","field_value":"模板ID"},{"field_key":"issue_reporter","field_value":"["userkey1"]"},{"field_key":"role_owners","field_value":"[{"role":"operator","owners":["userkey1"]}]"}]' --project-key 空间key --work-item-id {{work_item_id}} --ignore-required {{ignore_required}} --ignore-role-calculate {{ignore_role_calculate}} --format json
 ```
 
 > 🚨 `issue_reporter`（multi-user 类型的内置角色字段）和 `role_owners`（统一角色入口）是**两种可互换的写法**：前者走 meta-create-fields 返回的字段 key；后者用 meta-roles 返回的 role_id（如 `operator` / `reporter`，不含 `issue_` 前缀）。两者的 `field_value` 都必须是 **stringified JSON** 字符串。
+
+通过资源工作项模板实例创建：
+
+```bash
+meegle workitem create --work-item-type story --fields '{{fields}}' --project-key 空间key --work-item-id 资源模板实例ID --ignore-required {{ignore_required}} --ignore-role-calculate {{ignore_role_calculate}} --format json
+```
 
 ### workitem update
 更新普通字段：
@@ -94,7 +100,13 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 
 ### user search
 ```bash
-meegle user search --user-keys '["张三", "李四"]' --project-key {{project_key}} --format json
+meegle user search --user-keys '["张三", "李四"]' --project-key {{project_key}} --need-all-status {{need_all_status}} --format json
+```
+
+包含离职/停用等非在职用户：
+
+```bash
+meegle user search --user-keys '["张三"]' --project-key {{project_key}} --need-all-status true --format json
 ```
 
 ### user me

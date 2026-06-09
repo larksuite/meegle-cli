@@ -38,6 +38,9 @@ description: |
 | --work-item-type | string | 是 | 工作项类型 |
 | --project-key | string | 否 | 空间标识 |
 | --fields | array | 否 | 字段值列表，每项含 field_key 和 field_value |
+| --work-item-id | string | 否 | 工作项资源库模板实例 ID；通过资源工作项创建普通工作项时必填 |
+| --ignore-required | boolean | 否 | 是否忽略字段必填校验；默认 false，谨慎使用 |
+| --ignore-role-calculate | boolean | 否 | 是否忽略角色计算；默认 false，谨慎使用 |
 
 ### workitem get
 按 ID/名称查询工作项概况。不传 fields 时仅返回固定基础字段；如需自定义字段数据，先调 `workitem meta-fields` 获取字段 key 后传入 fields。
@@ -203,6 +206,7 @@ description: |
 |------|------|------|------|
 | --user-keys | array | 是 | userKey、Email 或名字，最多 20 个 |
 | --project-key | string | 否 | 空间 key |
+| --need-all-status | boolean | 否 | 是否返回所有状态用户；默认 false，仅返回在职用户 |
 
 ### user me
 查看当前用户信息。无需参数。
@@ -265,7 +269,7 @@ description: |
 
 ## WBS 计划表
 
-> 计划表（WBS）有 **草稿（draft）** 与 **已发布实例（instance）** 两套数据模型。常见编辑流程：`create-draft` → 多次 `edit-draft` → `publish-draft`；放弃改动用 `reset-draft`。详细参数表与 `edit-draft` 的 operation 子类型见 [references/wbs.md](references/wbs.md)。
+> 计划表（WBS）有 **草稿（draft）** 与 **已发布实例（instance）** 两套数据模型。常见编辑流程：`wbs create-draft` → 多次 `wbs edit-draft` → `wbs publish-draft`；放弃改动用 `wbs reset-draft`。详细参数表与 `wbs edit-draft` 的 operation 子类型见 [references/wbs.md](references/wbs.md)。
 
 ### wbs list-draft-rows
 在计划表草稿中按条件筛选行。常用筛选字段：`wbs_name`、`wbs_parent_id`、`wbs_owner_in_charge`、`wbs_states_doing`。详见 [references/wbs.md](references/wbs.md)。
@@ -274,8 +278,8 @@ description: |
 在已发布的线上计划表实例中按条件筛选行。参数同 `wbs list-draft-rows`。
 
 ### wbs edit-draft
-对计划表草稿单行执行一次原子操作。操作类型（新增 / 删除 / 恢复 / 排序 / 改名 / 改负责人 / 改排期）通过 `operation` 参数指定，结构见 [references/wbs.md](references/wbs.md)。
-> ⚠️ **前置**：草稿不存在时先调 `wbs create-draft`，再 `edit-draft`。判断方法：直接 `wbs list-draft-rows` 报"草稿不存在"类错误即视为缺失草稿。
+对计划表草稿执行一次原子编辑。一次调用只能传一个 `operation_type`，但该操作内部可通过 `items` / `uuids` 等数组承载单行或批量编辑；支持新增 / 删除 / 恢复 / 排序 / 改名 / 改负责人 / 改阶段 / 改排期 / 改估分 / 改实际工时等，结构见 [references/wbs.md](references/wbs.md)。
+> ⚠️ **前置**：草稿不存在时先调 `wbs create-draft`，再调 `wbs edit-draft`。判断方法：直接 `wbs list-draft-rows` 报"草稿不存在"类错误即视为缺失草稿。
 
 ### wbs publish-draft
 将编辑完成的草稿发布到线上。

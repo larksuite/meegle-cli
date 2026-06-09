@@ -24,6 +24,8 @@
 
 > 唯一匹配则直接用，多个匹配则展示列表让用户选，无匹配则问用户。**禁止猜测。**
 
+> 资源工作项模板创建：如果用户明确表示“通过资源库模板/资源工作项创建”，或 URL 解析得到资源工作项模板实例 ID，则将该 ID 作为 `--work-item-id` 传给 `workitem create`；此时按工具约束，`--work-item-id` 是必填的资源模板实例 ID。
+
 ### STEP 3 — 收集元数据（并行）
 
 同时发起以下调用：
@@ -36,6 +38,8 @@
 | `workitem meta-roles(page_num=1)` | 获取角色定义（如用户指定了负责人等角色） |
 
 如用户提到了人名，并行调用 `user search` 转换为 userkey。
+
+> 默认只查询在职用户。只有当用户明确要求包含离职、停用等非在职人员，或在职结果为空且用户要求继续查找时，才给 `user search` 传 `--need-all-status=true`。
 
 ### STEP 4 — 自动匹配模板
 
@@ -88,8 +92,10 @@
 ### STEP 6 — 创建
 
 ```bash
-meegle workitem create --work-item-type 类型key --fields '[{"field_key":"template","field_value":"模板ID"},{"field_key":"name","field_value":"标题"}]' --project-key 空间key --format json
+meegle workitem create --work-item-type 类型key --fields '[{"field_key":"template","field_value":"模板ID"},{"field_key":"name","field_value":"标题"}]' --project-key 空间key --work-item-id {{work_item_id}} --ignore-required {{ignore_required}} --ignore-role-calculate {{ignore_role_calculate}} --format json
 ```
+
+仅在用户明确要求跳过创建校验，或业务流程已确认由后端/后续步骤补齐时，才使用 `--ignore-required` / `--ignore-role-calculate`；默认不要主动开启。
 
 🚨 **批量创建**：当用户要求批量创建多个工作项时，必须**串行调用**（逐个请求），禁止高并发，以免触发平台限流。每个 field_value 均须符合「字段值格式」的 STRING 约定（标量直接字符串化；数组/对象 JSON.stringify）。
 
