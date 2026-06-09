@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.8] - 2026-06-09
+
+### Added
+
+- `--envelope` now surfaces the backend `logid` under `meta.logid` when present. Previously the MCP server emitted the trace id as a `logid:` content entry, which the CLI stripped into `Response.LogID` but only forwarded to `slog.Debug` — and since no default slog handler is configured, the id was silently dropped. Oncall now has a way to ask end users for an argos-lookupable trace id: re-run with `--envelope` and read `meta.logid`. The id is still suppressed without `--envelope` so default output stays clean for piping. Only covers the single-call path for now; batch (`+batch-get`) per-row logid remains a follow-up
+
 ## [v1.0.7] - 2026-06-09
 
 ### Fixed

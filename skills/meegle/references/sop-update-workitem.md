@@ -66,6 +66,26 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 [{"op": "add", "role_key": "角色key", "user_keys": ["userkey1"]}]
 ```
 
+**拉群方式更新（`group_type` 逻辑字段）**：服务端把 `group_id` / `chat_group` 合并到 `group_type` 单字段，统一通过它读写——**禁止再单独写 `group_id` / `chat_group`**。写协议 `field_value`：
+
+```json
+{"type": "auto" | "bind" | "disabled", "group_id": "oc_xxx"}
+```
+
+⚠️ **读写不对称**：读返回的判别键是 `value`（如 `{"value":"auto","label":"自动拉群","group_id":"oc_xxx"}`），写要求的判别键是 `type`。不能直接把读到的结构丢回 update。
+
+| `type` | 含义 | 是否带 `group_id` | 客户端预校验 |
+|---|---|---|---|
+| `auto` | 自动拉群 | 不允许 | 带了 → 阻断（服务端会回 `group_type conflicts with group_id: type=auto`） |
+| `bind` | 绑定现有群 | **必填**，非空 `oc_xxx`（空串/纯空格也算缺失） | 缺失或全空白 → 阻断（服务端会回 `group_id is required when group_type=bind`） |
+| `disabled` | 不拉群 | 不允许 | 带了 → 阻断（服务端会回 `group_type conflicts with group_id: type=disabled`） |
+
+写法示例（详见 [api-examples.md](api-examples.md) 工作项域）：
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"bind","group_id":"oc_xxx"}"}]' --format json
+```
+
 ### STEP 5 — 返回结果
 
 展示修改了哪些字段及修改后的值。

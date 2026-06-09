@@ -11,6 +11,23 @@ import (
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 )
 
+// logIDPrefixes is the set of prefixes the MCP server has historically used
+// to mark the trace id text entry. The current server emits "log_id:"; older
+// notes/comments referenced "logid:". Match both so a server-side rename does
+// not silently drop the id again (which is what happened before — the code
+// matched "logid:" but the server emitted "log_id:", so Response.LogID was
+// always empty and the slog.Debug call hid the breakage).
+var logIDPrefixes = []string{"log_id:", "logid:"}
+
+func stripLogIDPrefix(text string) (id string, matched bool) {
+	for _, p := range logIDPrefixes {
+		if rest, ok := strings.CutPrefix(text, p); ok {
+			return strings.TrimSpace(rest), true
+		}
+	}
+	return "", false
+}
+
 type Response struct {
 	Data  any
 	Raw   string
@@ -60,8 +77,8 @@ func unwrapResponse(raw json.RawMessage) (*Response, error) {
 	// Filter logid only for non-error responses
 	var dataTexts []string
 	for _, text := range allTexts {
-		if strings.HasPrefix(text, "logid:") {
-			result.LogID = text
+		if id, ok := stripLogIDPrefix(text); ok {
+			result.LogID = id
 			slog.Debug(text)
 		} else {
 			dataTexts = append(dataTexts, text)

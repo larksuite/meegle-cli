@@ -1034,6 +1034,124 @@ func TestMcpExecutorStep_DefaultUserAgentWhenUnset(t *testing.T) {
 	}
 }
 
+// When the backend returns a "log_id: <id>" content entry, McpExecutorStep
+// must surface it under Result.Metadata["logid"] so the EnvelopeHook can
+// expose it via --envelope. Without this, the id is silently dropped and
+// oncall has no way to trace a specific call back to argos. The production
+// server uses "log_id:" (with underscore); see mcpclient.logIDPrefixes for
+// the historical "logid:" alias.
+func TestMcpExecutorStep_PropagatesLogIDToMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID int64 `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body.ID,
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "log_id: 20260519145706D6A0F7B0A114DB405B66"},
+					{"type": "text", "text": `{"ok":true}`},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	step := &McpExecutorStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"workitem", "get-brief"},
+			Node:     &registry.CommandNode{HandlerRef: "get_work_item"},
+			Flags:    map[string]any{},
+		},
+		Values: map[string]any{},
+		OutputConfig: map[string]any{
+			"mcp.host":       "ignored.example.com",
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("executor step failed: %v", err)
+	}
+	if state.Result == nil || state.Result.Metadata == nil {
+		t.Fatalf("expected Result with Metadata, got %+v", state.Result)
+	}
+	got, _ := state.Result.Metadata["logid"].(string)
+	if got != "20260519145706D6A0F7B0A114DB405B66" {
+		t.Errorf("expected logid metadata stripped of prefix, got %q", got)
+	}
+}
+
+// When the backend response carries no logid entry, Metadata must not
+// contain an empty logid key — otherwise --envelope output would show
+// {"logid":""} and mislead users into thinking they have a trace id.
+func TestMcpExecutorStep_OmitsLogIDWhenAbsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID int64 `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body.ID,
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": `{"ok":true}`},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	step := &McpExecutorStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"workitem", "get-brief"},
+			Node:     &registry.CommandNode{HandlerRef: "get_work_item"},
+			Flags:    map[string]any{},
+		},
+		Values: map[string]any{},
+		OutputConfig: map[string]any{
+			"mcp.host":       "ignored.example.com",
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("executor step failed: %v", err)
+	}
+	if state.Result == nil {
+		t.Fatalf("expected Result, got nil")
+	}
+	if _, ok := state.Result.Metadata["logid"]; ok {
+		t.Errorf("expected no logid key in metadata when backend omitted it, got %+v", state.Result.Metadata)
+	}
+}
+
+func TestExtractLogID(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"abc123", "abc123"}, // bare id — what mcpclient now passes us
+		{"log_id: abc123", "abc123"},
+		{"log_id:abc123", "abc123"},
+		{"  log_id:   abc123  ", "abc123"},
+		{"logid: abc123", "abc123"}, // historical alias
+		{"logid:abc123", "abc123"},
+	}
+	for _, c := range cases {
+		if got := extractLogID(c.in); got != c.want {
+			t.Errorf("extractLogID(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // SessionStep must translate ident.UserAgentCaller into the pre-built
 // "mcp.user_agent" key that newMcpClientFromState consumes. This pins the
 // startup → runtime handoff.

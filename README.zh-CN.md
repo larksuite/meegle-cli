@@ -644,6 +644,7 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--set` | | 设置嵌套参数（可重复） |
 | `--params` | `-P` | 完整 JSON 参数体；以 `@` 开头改为从文件读取（如 `--params @body.json`） |
 | `--dry-run` | | 只渲染请求，不实际执行 |
+| `--envelope` | | 将成功输出包装为 `{data, meta, error}` —— 后端返回 logid 时挂在 `meta.logid` |
 | `--verbose` | `-v` | 详细输出 |
 | `--profile` | | 指定配置 profile |
 | `--refresh` | | 从服务端刷新本地命令缓存（旁路 24 小时缓存） |
@@ -691,6 +692,20 @@ meegle mywork todo --action done --page-num 1 \
 ### 元数据保留
 
 默认渲染下，响应的完整结构在所有 `--format` 中都会保留：列表接口返回的 `{"list":[...], "total":N, "pagination":{...}}` 原样呈现 —— 即使你没有在 `--select` 中点名，`total` / `pagination` 这些元数据字段依然可见。要钻到具体记录就显式用 `--select`（配合上面的广播语法）。`--format table` 和 `--format ndjson` 下，形如 `{"list":[...]}` 的单键包装（没有兄弟元数据）仍然会被无损展开成行展示。
+
+### 通过 `--envelope` 拿到 logid
+
+遇到"返回 success 但实际没生效"、"输出不符合预期"等情况，需要让 oncall
+按 logid 反查具体调用时，加上 `--envelope`：
+
+```bash
+meegle workflow update-node --work-item-id 12345 \
+  --set node_schedule.points=10 --envelope
+```
+
+成功输出会被包装为 `{data, meta, error}`，后端返回 logid 时挂在
+`meta.logid` 里——把这个 id 交给 oncall 就能在 argos 定位到这次请求。
+不加 `--envelope` 时 logid 会被抑制，保持默认输出干净便于管道处理。
 
 ### Dry Run
 

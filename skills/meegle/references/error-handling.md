@@ -28,4 +28,7 @@ SKILL.md 主文件已经收录错误处理总则与熔断条件，本文件提�
 | 节点流转失败 | 节点流用 `workflow transition`；状态流用 `workflow transition-state`（先 `workflow list-state-transitions` 取 transition_id，再 `workflow list-state-required` 查必填项） |
 | 创建工作项缺少模板 | `workitem meta-fields(field_keys=["template"])` 获取 |
 | 角色更新失败 | 改用 `workitem update` 的 `role_operate` 参数（不走 fields） |
+| `group_id is required when group_type=bind` | 更新 `group_type` 时 `type=bind` 必须带 `group_id`，并且不能是空串或纯空格；改成 `{"type":"bind","group_id":"oc_xxx"}` 后重试。要解绑群改用 `{"type":"disabled"}` |
+| `group_type conflicts with group_id: type=<auto|disabled>` | 同时传了 `type=auto` 或 `type=disabled` 又带了 `group_id`；保留 `type=bind` + `group_id`，或去掉 `group_id` 后重试 |
+| `need I64 type, but got: STRING`（page_size / page_token） | `page_size` 被当成字符串传出；meegle CLI 改用 `--params '{"page_size":N,"page_token":"<token>"}'` 让数字以 JSON number 传出 |
 | mywork.todo 需选择工作区 | 按报错中的列表把 `asset_key`（Asset_xxx）传入重试 |

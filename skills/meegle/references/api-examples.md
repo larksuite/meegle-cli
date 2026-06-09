@@ -60,6 +60,21 @@ meegle workitem query --project-key 空间key --session-id 上次返回的sessio
 meegle workitem get --work-item-id 工作项ID或名称 --fields '{{fields}}' --project-key 空间key --format json
 ```
 
+只取拉群方式（`group_type` 逻辑字段，聚合自 `group_id` / `chat_group`）：
+
+```bash
+meegle workitem get --work-item-id 工作项ID --fields '["group_type"]' --project-key 空间key --format json
+```
+
+全量字段分页（`fields=["_all"]` 时按逻辑字段分页，`page_size` 默认 100，最大 200；下一页用上次响应的 `next_page_token` 传 `page_token`，token 形如字段 key 如 `"business"`）：
+
+⚠️ meegle CLI 当前 `--page-size` / `--page-token` flag 会被序列化成字符串触发后端 `need I64 type, but got: STRING`；当前可用的写法是通过 `--params` 把整数传出去——
+
+```bash
+meegle workitem get --work-item-id 工作项ID --project-key 空间key --fields '["_all"]' --params '{"page_size":100}' --format json
+meegle workitem get --work-item-id 工作项ID --project-key 空间key --fields '["_all"]' --params '{"page_size":100,"page_token":"<next_page_token>"}' --format json
+```
+
 ### workitem create
 基础创建（仅标量字段）：
 
@@ -92,6 +107,26 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 
 ```bash
 meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key": "current_status_operator", "field_value": "["userkey1","userkey2"]"}]' --format json
+```
+
+更新拉群方式（`group_type` 逻辑字段，统一替代旧 `group_id` / `chat_group`）——三种形态：
+
+切到自动拉群（不带 `group_id`）：
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"auto"}"}]' --format json
+```
+
+绑定现有群（`type=bind` 必须带非空 `group_id`）：
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"bind","group_id":"oc_xxx"}"}]' --format json
+```
+
+关闭拉群：
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"disabled"}"}]' --format json
 ```
 
 ---
