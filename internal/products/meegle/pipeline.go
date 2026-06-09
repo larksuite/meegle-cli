@@ -305,16 +305,44 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 				data = fn(data)
 			}
 		}
+		metadata := map[string]any{
+			"tool":        toolName,
+			"command":     strings.Join(state.Parsed.FullPath, " "),
+			"duration_ms": duration.Milliseconds(),
+		}
+		// Surface the backend logid to users via --envelope. The MCP server emits
+		// it as a "log_id: <id>" content entry, which mcpclient strips into
+		// Response.LogID (bare id, no prefix); without this hop into Metadata
+		// the id is silently dropped and oncall has no way to trace a specific
+		// call back to argos.
+		if logid := extractLogID(resp.LogID); logid != "" {
+			metadata["logid"] = logid
+		}
 		state.Result = &executor.RawResult{
-			Data: data,
-			Metadata: map[string]any{
-				"tool":        toolName,
-				"command":     strings.Join(state.Parsed.FullPath, " "),
-				"duration_ms": duration.Milliseconds(),
-			},
+			Data:     data,
+			Metadata: metadata,
 		}
 	}
 	return nil
+}
+
+// extractLogID returns the bare id for state.Metadata. mcpclient already
+// strips the "log_id:" / "logid:" prefix into Response.LogID, but we re-check
+// here as defense in depth — if a future code path forwards a raw-prefixed
+// string, we still surface a clean id instead of leaking the prefix into
+// --envelope's meta.
+func extractLogID(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	for _, p := range []string{"log_id:", "logid:"} {
+		if rest, ok := strings.CutPrefix(s, p); ok {
+			s = strings.TrimSpace(rest)
+			break
+		}
+	}
+	return s
 }
 
 func discoveryFailureCommandError(state *pipeline.PipelineContext) error {

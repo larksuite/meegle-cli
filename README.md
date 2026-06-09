@@ -658,6 +658,7 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--set` | | Set nested parameters (repeatable) |
 | `--params` | `-P` | Full JSON parameter body; prefix with `@` to read from a file (e.g. `--params @body.json`) |
 | `--dry-run` | | Render request without executing |
+| `--envelope` | | Wrap success output as `{data, meta, error}` — `meta.logid` carries the backend trace id when present |
 | `--verbose` | `-v` | Verbose output |
 | `--profile` | | Use a specific configuration profile |
 | `--refresh` | | Refresh cached commands from server (bypass the local 24 h cache) |
@@ -714,6 +715,21 @@ when you do not project them. Drill into records explicitly via
 and `--format ndjson`, a single-key wrapper like `{"list":[...]}`
 (no sibling metadata) is still peeled into rows — the peel is
 loss-less.
+
+### Tracing with `--envelope`
+
+When something looks wrong (silent success, unexpected payload) and you
+want to ask oncall to trace the exact call, add `--envelope`:
+
+```bash
+meegle workflow update-node --work-item-id 12345 \
+  --set node_schedule.points=10 --envelope
+```
+
+The success output is wrapped as `{data, meta, error}`, and `meta.logid`
+carries the backend trace id (when the server returns one). Hand that id
+to oncall to look up the request in argos. Without `--envelope` the id is
+suppressed so the default output stays clean for piping.
 
 ### Dry Run
 

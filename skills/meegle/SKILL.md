@@ -43,13 +43,26 @@ description: |
 | --ignore-role-calculate | boolean | 否 | 是否忽略角色计算；默认 false，谨慎使用 |
 
 ### workitem get
-按 ID/名称查询工作项概况。不传 fields 时仅返回固定基础字段；如需自定义字段数据，先调 `workitem meta-fields` 获取字段 key 后传入 fields。
+按 ID/名称查询工作项概况。不传 fields 时返回固定基础字段加上一组默认带出的系统字段——实测包含 `group_type` 拉群方式、`description`、`current_status_operator`、`watchers`（即便 value 为 null 也会出现）；其余字段需要通过 `workitem meta-fields` 拿到 key 后再传入 fields。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | --work-item-id | string | 是 | 工作项 ID 或名称 |
 | --project-key | string | 否 | 空间 key |
-| --fields | array | 否 | 要查询的 field_key 或 field_name |
+| --fields | array | 否 | 要查询的 field_key 或 field_name；传 `["_all"]` 时按逻辑字段分页返回全部字段；传 `["group_type"]` 时只取拉群方式 |
+| --page-size | number | 否 | 仅 `fields=["_all"]` 时生效；每页字段数量，默认 100，最大 200。**meegle CLI 注意**：直接传 `--page-size N` 会被序列化成字符串触发后端 `need I64 type, but got: STRING`；当前只能走 `--params '{"page_size":N}'` 让它以数字传出 |
+| --page-token | string | 否 | 仅 `fields=["_all"]` 时生效；翻页 token，首次不传，下一页传上次响应的 `next_page_token`（token 形如字段 key，例如 `"business"`）；同上，meegle CLI 当前需要走 `--params '{"page_token":"..."}'` |
+
+> **逻辑字段聚合（重要心智模型）**：服务端把 `group_id` / `chat_group` 这类"拉群"相关的物理字段**合并**到一个逻辑字段 `group_type`。读取/更新统一走 `group_type`，**不要再单独读取 `group_id` 或 `chat_group`**。
+>
+> ⚠️ **读写协议不对称**：读返回结构里**判别键是 `value`**（不是 `type`），更新时**判别键是 `type`**——别照着读到的结构直接回写。
+>
+> 读返回（`workitem_fields[].value` 字段）的形状：
+> - `auto` → `{value: "auto", label: "自动拉群", group_id: "oc_xxx"}`（自动拉群通常有 group_id；状态切换时 oc_id 可能会变）
+> - `bind` → `{value: "bind", label: "绑定现有群", group_id: "oc_xxx"}`
+> - `disabled` → `{value: "disabled", label: "不拉群"}`（无 group_id）
+>
+> 写协议（`field_value` 里的 JSON）：`{"type": "auto" | "bind" | "disabled", "group_id": "oc_xxx"}`
 
 ### workitem batch-get
 批量查询工作项（Meegle CLI 客户端 fan-out：并发调用 `workitem get`）。单次 ≤ 200 个 ID，3 并发，返回 `{results, errors, summary}`；ID 量大时用 `--format ndjson` 流式输出。
@@ -72,6 +85,8 @@ description: |
 | --role-operate | array | 否 | 角色操作，每项含 op(add/remove)、role_key、user_keys |
 
 **角色更新**：不能通过 fields 更新角色，必须用 `role_operate`。role_key 通过 `workitem meta-roles` 获取，user_keys 通过 `user search` 获取。
+
+**拉群方式更新（`group_type` 逻辑字段）**：要修改/读取拉群方式统一走 `group_type`，不要再单独操作 `group_id` / `chat_group`。写协议 `field_value` 形如：`{"type": "auto" | "bind" | "disabled", "group_id": "oc_xxx"}`（注意写用 `type` 作为判别键，**与读返回的 `value` 不对称**）。校验规则（服务端实际报错文本）：`bind` 不带 `group_id` 或带空串/纯空格 → `group_id is required when group_type=bind`；`auto`/`disabled` 同时带 `group_id` → `group_type conflicts with group_id: type=<auto|disabled>`。详细示例见 [references/sop-update-workitem.md](references/sop-update-workitem.md)。
 
 ### workitem query
 使用 MQL 查询工作项数据。语法详见 [references/mql-syntax.md](references/mql-syntax.md)。
