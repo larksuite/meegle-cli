@@ -5,11 +5,13 @@ package meegle
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
 	"github.com/larksuite/meegle-cli/pkg/framework/pipeline"
@@ -349,6 +351,7 @@ func (s *AttachmentShortcutStep) runDownload(ctx context.Context, state *pipelin
 		FileURL:    fileURL,
 		Output:     stringFlag(state, "output"),
 		Overwrite:  boolFlag(state, "overwrite"),
+		Headers:    downloadGETHeaders(state),
 	}
 
 	mcp := s.resolveClient(state)
@@ -363,11 +366,59 @@ func (s *AttachmentShortcutStep) runDownload(ctx context.Context, state *pipelin
 	}
 	result, err := attachment.ExecuteDownload(ctx, doer, pre, in)
 	if err != nil {
-		return err
+		return mapDownloadError(err)
 	}
 
 	state.Result = &executor.RawResult{Data: result}
 	return nil
+}
+
+// mapDownloadError translates the attachment package's file-signature integrity
+// guard failures into a user-facing CLIENT_* error with a retry hint. The bug
+// it guards against — a CDN cache occasionally serving the wrong object —
+// usually clears on retry, so both variants steer the user to re-run the
+// command. Any other error passes through unchanged.
+func mapDownloadError(err error) error {
+	switch {
+	case stderrors.Is(err, attachment.ErrFileSignMismatch):
+		return meerrors.NewClientError("CLIENT_FILE_SIGN_MISMATCH",
+			fmt.Sprintf("downloaded file failed its integrity check (%v); download failed", err)).
+			WithSuggestion("The download returned content for a different signature, likely a stale CDN cache. Please retry `meegle attachment +download`.")
+	case stderrors.Is(err, attachment.ErrFileSignMissing):
+		return meerrors.NewClientError("CLIENT_FILE_SIGN_UNVERIFIED",
+			fmt.Sprintf("cannot verify the downloaded file's integrity (%v); download failed", err)).
+			WithSuggestion("The download response did not include the signature header needed to verify the file. Please retry `meegle attachment +download`.")
+	default:
+		return err
+	}
+}
+
+// downloadGETHeaders returns the profile's configured custom headers for use on
+// the object-storage download GET, with auth-bearing headers stripped so the
+// Meegle token is never leaked to that host. This lets environment / lane
+// routing headers configured for the MCP calls also pin the download GET to the
+// same lane. Mirrors the auth-stripping in newMcpClientFromState. Returns nil
+// when nothing forwardable remains.
+func downloadGETHeaders(state *pipeline.PipelineContext) map[string]string {
+	hdrs, _ := state.OutputConfig["mcp.headers"].(map[string]string)
+	if len(hdrs) == 0 {
+		return nil
+	}
+	authHeader, _ := state.OutputConfig["mcp.access_token_header"].(string)
+	out := make(map[string]string, len(hdrs))
+	for k, v := range hdrs {
+		if strings.EqualFold(k, "Authorization") {
+			continue
+		}
+		if authHeader != "" && strings.EqualFold(k, authHeader) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // resolveClient returns the test-injected MCPClient or, in production, wraps

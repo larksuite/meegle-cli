@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.9] - 2026-06-11
+
+### Added
+
+- `attachment +download` now performs an extra integrity check on the downloaded file and aborts — writing nothing to disk — when the file fails validation or cannot be verified. A failed check returns a `CLIENT_FILE_SIGN_MISMATCH` error and an unverifiable response returns `CLIENT_FILE_SIGN_UNVERIFIED`; both carry a retry hint.
+
 ## [v1.0.8] - 2026-06-09
 
 ### Added

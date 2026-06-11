@@ -468,6 +468,15 @@ meegle attachment +download "$URL" \
   --output ./local.pdf --overwrite
 ```
 
+**完整性校验（`+download`）**：`+download` 会对下载的文件做一次额外的完整性校验，
+若校验失败或无法校验则中止下载、不写任何文件。校验不通过时返回
+`CLIENT_FILE_SIGN_MISMATCH` 错误（无法校验时为 `CLIENT_FILE_SIGN_UNVERIFIED`）；
+两者都是临时问题，重试即可。
+
+**自定义头 / 环境路由**：当前 profile 配置的自定义头会同时作用于下载 GET 与预处理调用，
+从而用环境路由头把整条下载固定到同一环境。GET 前会剥掉 auth 相关头，
+确保 token 不会发到对象存储所在的主机。
+
 `+upload` 输出 JSON 对象，包含 file_token 与文件元信息：
 
 ```json
