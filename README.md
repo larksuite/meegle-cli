@@ -474,6 +474,18 @@ meegle attachment +download "$URL" \
   --output ./local.pdf --overwrite
 ```
 
+**Integrity check (`+download`)**: `+download` performs an extra integrity check
+on each downloaded file and aborts — writing nothing — if the file fails
+validation or cannot be verified. On a failed check you get a
+`CLIENT_FILE_SIGN_MISMATCH` error (unverifiable response →
+`CLIENT_FILE_SIGN_UNVERIFIED`); both are transient, so just retry.
+
+**Custom headers / env routing**: any custom headers configured for the active
+profile are applied to the download GET as well as the preprocess call, so an
+environment-routing header pins the whole download to the same environment. Auth
+headers are stripped before the GET so the token never reaches the
+object-storage host.
+
 `+upload` returns a JSON object with the file token and metadata:
 
 ```json

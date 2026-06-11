@@ -201,6 +201,7 @@ func TestExecuteDownload_RequiresOutput(t *testing.T) {
 func TestExecuteDownload_OneShot_NoMCP(t *testing.T) {
 	payload := []byte("file contents")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Meego-File-Sign", "S")
 		w.WriteHeader(200)
 		_, _ = w.Write(payload)
 	}))

@@ -6,6 +6,7 @@ package attachment_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,6 +48,7 @@ func TestDownloadFlow_OneShot(t *testing.T) {
 		gotSign = r.Header.Get("X-Meego-File-Sign")
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("Content-Disposition", `attachment; filename="server.txt"`)
+		w.Header().Set("X-Meego-File-Sign", "SIGN-DL")
 		w.WriteHeader(200)
 		_, _ = w.Write(payload)
 	}))
@@ -110,6 +112,7 @@ func TestDownloadFlow_Multipart_ConcatenatesParts(t *testing.T) {
 		parts := strings.Split(r.URL.Path, "/")
 		last := parts[len(parts)-1]
 		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Meego-File-Sign", "S")
 		w.WriteHeader(200)
 		switch last {
 		case "0":
@@ -174,6 +177,7 @@ func TestDownloadFlow_ExistingOutput_NoOverwrite(t *testing.T) {
 
 func TestDownloadFlow_ExistingOutput_WithOverwrite(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Meego-File-Sign", "S")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("new contents"))
 	}))
@@ -228,6 +232,170 @@ func TestDownloadFlow_HTTP404_CleansUpPartial(t *testing.T) {
 	}
 	if _, e := os.Stat(output + ".partial"); !os.IsNotExist(e) {
 		t.Errorf(".partial should be cleaned up after failed download")
+	}
+}
+
+func TestDownloadFlow_FileSignMismatch_Aborts(t *testing.T) {
+	// Integrity guard: the response echoes a signature that doesn't match the
+	// one we requested (cache served the wrong object), so the download must
+	// abort fail-closed and leave nothing behind.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Meego-File-Sign", "WRONG")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("the wrong object"))
+	}))
+	defer ts.Close()
+
+	mcp := &fakeMCP{response: &attachment.MCPResponse{Data: map[string]any{
+		"sign": "S", "is_multipart": false,
+		"download_url": ts.URL + "/:part_number",
+	}}}
+	tmpDir := t.TempDir()
+	output := filepath.Join(tmpDir, "wrong-object.txt")
+
+	_, err := downloadFull(t, mcp, http.DefaultClient, attachment.DownloadInput{
+		ProjectKey: "P", WorkItemID: "W", FileURL: "x", Output: output,
+	})
+	if !errors.Is(err, attachment.ErrFileSignMismatch) {
+		t.Fatalf("want ErrFileSignMismatch, got %v", err)
+	}
+	if _, e := os.Stat(output); !os.IsNotExist(e) {
+		t.Errorf("output should not exist after mismatch abort")
+	}
+	if _, e := os.Stat(output + ".partial"); !os.IsNotExist(e) {
+		t.Errorf(".partial should be cleaned up after mismatch abort")
+	}
+}
+
+func TestDownloadFlow_FileSignCaseInsensitive_Succeeds(t *testing.T) {
+	// The signature comparison is case-insensitive: a response echoing the sign
+	// in a different case must still be accepted.
+	payload := []byte("case folded ok")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Meego-File-Sign", "sign-dl")
+		w.WriteHeader(200)
+		_, _ = w.Write(payload)
+	}))
+	defer ts.Close()
+
+	mcp := &fakeMCP{response: &attachment.MCPResponse{Data: map[string]any{
+		"sign": "SIGN-DL", "is_multipart": false,
+		"download_url": ts.URL + "/:part_number",
+	}}}
+	tmpDir := t.TempDir()
+	output := filepath.Join(tmpDir, "folded.txt")
+
+	result, err := downloadFull(t, mcp, http.DefaultClient, attachment.DownloadInput{
+		ProjectKey: "P", WorkItemID: "W", FileURL: "x", Output: output,
+	})
+	if err != nil {
+		t.Fatalf("case-insensitive sign should be accepted: %v", err)
+	}
+	if result.Size != int64(len(payload)) {
+		t.Errorf("Size=%d, want %d", result.Size, len(payload))
+	}
+}
+
+func TestDownloadFlow_MissingFileSignHeader_Aborts(t *testing.T) {
+	// Fail-closed: a response with no signature header can't be verified, so the
+	// download aborts rather than trusting an unverified object.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("unverifiable object"))
+	}))
+	defer ts.Close()
+
+	mcp := &fakeMCP{response: &attachment.MCPResponse{Data: map[string]any{
+		"sign": "S", "is_multipart": false,
+		"download_url": ts.URL + "/:part_number",
+	}}}
+	tmpDir := t.TempDir()
+	output := filepath.Join(tmpDir, "unverified.txt")
+
+	_, err := downloadFull(t, mcp, http.DefaultClient, attachment.DownloadInput{
+		ProjectKey: "P", WorkItemID: "W", FileURL: "x", Output: output,
+	})
+	if !errors.Is(err, attachment.ErrFileSignMissing) {
+		t.Fatalf("want ErrFileSignMissing, got %v", err)
+	}
+	if _, e := os.Stat(output + ".partial"); !os.IsNotExist(e) {
+		t.Errorf(".partial should be cleaned up after missing-header abort")
+	}
+}
+
+func TestDownloadFlow_Multipart_PartMismatch_Aborts(t *testing.T) {
+	// First part echoes the right signature, second part echoes a wrong one
+	// (cache poisoned mid-stream). The guard must fire on the bad part and the
+	// mismatch must survive the multipart error wrap so errors.Is still matches.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(r.URL.Path, "/")
+		last := parts[len(parts)-1]
+		switch last {
+		case "0":
+			w.Header().Set("X-Meego-File-Sign", "S")
+		default:
+			w.Header().Set("X-Meego-File-Sign", "WRONG")
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("chunk"))
+	}))
+	defer ts.Close()
+
+	mcp := &fakeMCP{response: &attachment.MCPResponse{Data: map[string]any{
+		"sign": "S", "is_multipart": true,
+		"download_url": ts.URL + "/dl/:part_number",
+		"multipart":    map[string]any{"part_count": 2, "part_size": 5},
+	}}}
+	tmpDir := t.TempDir()
+	output := filepath.Join(tmpDir, "poisoned.bin")
+
+	_, err := downloadFull(t, mcp, http.DefaultClient, attachment.DownloadInput{
+		ProjectKey: "P", WorkItemID: "W", FileURL: "x", Output: output,
+	})
+	if !errors.Is(err, attachment.ErrFileSignMismatch) {
+		t.Fatalf("want ErrFileSignMismatch through multipart wrap, got %v", err)
+	}
+	if _, e := os.Stat(output); !os.IsNotExist(e) {
+		t.Errorf("output should not exist after multipart mismatch abort")
+	}
+	if _, e := os.Stat(output + ".partial"); !os.IsNotExist(e) {
+		t.Errorf(".partial should be cleaned up after multipart mismatch abort")
+	}
+}
+
+func TestDownloadFlow_ForwardsExtraHeaders(t *testing.T) {
+	// Caller-supplied headers (e.g. lane routing) must reach the GET, and must
+	// not be able to clobber the signature header.
+	var gotEnv, gotSign string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEnv = r.Header.Get("X-Custom-Env")
+		gotSign = r.Header.Get("X-Meego-File-Sign")
+		w.Header().Set("X-Meego-File-Sign", "S")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer ts.Close()
+
+	mcp := &fakeMCP{response: &attachment.MCPResponse{Data: map[string]any{
+		"sign": "S", "is_multipart": false,
+		"download_url": ts.URL + "/:part_number",
+	}}}
+	tmpDir := t.TempDir()
+	output := filepath.Join(tmpDir, "with-headers.txt")
+
+	_, err := downloadFull(t, mcp, http.DefaultClient, attachment.DownloadInput{
+		ProjectKey: "P", WorkItemID: "W", FileURL: "x", Output: output,
+		// The bogus signature here must lose to the real one set by the flow.
+		Headers: map[string]string{"x-custom-env": "lane-1", "X-Meego-File-Sign": "HACK"},
+	})
+	if err != nil {
+		t.Fatalf("downloadFull: %v", err)
+	}
+	if gotEnv != "lane-1" {
+		t.Errorf("x-custom-env=%q, want lane-1 (extra header not forwarded)", gotEnv)
+	}
+	if gotSign != "S" {
+		t.Errorf("sign header=%q, want S (extra header must not clobber the signature)", gotSign)
 	}
 }
 

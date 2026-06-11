@@ -106,6 +106,13 @@ type DownloadInput struct {
 	FileURL    string // opaque reference received from another MCP tool
 	Output     string // local destination path
 	Overwrite  bool
+	// Headers are extra HTTP headers set on each object-storage GET — used to
+	// carry environment / lane routing headers so a download can be pinned to
+	// the same lane as the preprocess call. The caller is
+	// responsible for stripping auth-bearing headers so the Meegle token is
+	// never leaked to the object-storage host. The signature header always
+	// takes precedence over anything supplied here.
+	Headers map[string]string
 }
 
 // DownloadResult is returned on success. Name / MimeType are best-effort from
@@ -122,6 +129,13 @@ type DownloadResult struct {
 // keeps the two flows in sync if the backend ever changes the placeholder.
 const partNumberPlaceholder = ":part_number"
 
-// signHeader is the HTTP header carrying the per-request signature returned
-// by the MCP preprocess tool. Used by both upload and download flows.
+// signHeader is the HTTP header carrying the per-request signature returned by
+// the MCP preprocess tool. The upload and download flows send it on each
+// object-storage request; on download the backend also echoes it back on the
+// response, and +download compares the echoed value against the requested
+// signature to verify the file's correctness — guarding against a CDN cache
+// occasionally serving the wrong object. The guard is fail-closed: a missing
+// or mismatched header aborts the download before any bytes reach the
+// destination. HTTP header names are case-insensitive (http.Header.Get
+// canonicalises), and the value is compared case-insensitively too.
 const signHeader = "X-Meego-File-Sign"

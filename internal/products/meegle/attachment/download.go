@@ -6,6 +6,7 @@ package attachment
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -13,6 +14,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+)
+
+// ErrFileSignMissing and ErrFileSignMismatch report failures of the file
+// signature integrity guard performed during +download (see verifySign). They
+// are exported so the register layer can errors.Is them — across the multipart
+// wrap — and map them to a user-facing CLIENT_* error with a retry hint.
+var (
+	ErrFileSignMissing  = errors.New("download response missing file signature header")
+	ErrFileSignMismatch = errors.New("download response file signature does not match the requested signature")
 )
 
 // DownloadPreprocess is the parsed result of the get_download_url MCP tool —
@@ -109,7 +119,7 @@ func ExecuteDownload(ctx context.Context, doer HTTPDoer, pre *DownloadPreprocess
 
 	if !pre.IsMultipart {
 		url := strings.ReplaceAll(pre.DownloadURL, partNumberPlaceholder, "0")
-		meta, err := doDownloadPart(ctx, doer, url, pre.Sign, partial)
+		meta, err := doDownloadPart(ctx, doer, url, pre.Sign, in.Headers, partial)
 		if err != nil {
 			cleanup()
 			return nil, err
@@ -120,7 +130,7 @@ func ExecuteDownload(ctx context.Context, doer HTTPDoer, pre *DownloadPreprocess
 	} else {
 		for i := int32(0); i < pre.Multipart.PartCount; i++ {
 			url := strings.ReplaceAll(pre.DownloadURL, partNumberPlaceholder, strconv.Itoa(int(i)))
-			meta, err := doDownloadPart(ctx, doer, url, pre.Sign, partial)
+			meta, err := doDownloadPart(ctx, doer, url, pre.Sign, in.Headers, partial)
 			if err != nil {
 				cleanup()
 				return nil, fmt.Errorf("download chunk %d: %w", i, err)
@@ -207,10 +217,15 @@ type partMeta struct {
 	mimeType string
 }
 
-func doDownloadPart(ctx context.Context, doer HTTPDoer, url, sign string, sink io.Writer) (*partMeta, error) {
+func doDownloadPart(ctx context.Context, doer HTTPDoer, url, sign string, extraHeaders map[string]string, sink io.Writer) (*partMeta, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
+	}
+	// Caller-supplied headers first (e.g. environment-routing headers); the
+	// signature header is set last so it can never be clobbered.
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
 	}
 	req.Header.Set(signHeader, sign)
 	resp, err := doer.Do(req)
@@ -221,6 +236,12 @@ func doDownloadPart(ctx context.Context, doer HTTPDoer, url, sign string, sink i
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("download part HTTP %d", resp.StatusCode)
 	}
+	// Integrity guard before reading the body: abort if the echoed signature
+	// doesn't match the one we requested, so a mis-served object is never
+	// written.
+	if err := verifySign(resp.Header.Get(signHeader), sign); err != nil {
+		return nil, err
+	}
 	n, err := io.Copy(sink, resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("write part body: %w", err)
@@ -230,6 +251,23 @@ func doDownloadPart(ctx context.Context, doer HTTPDoer, url, sign string, sink i
 		name:     filenameFromHeader(resp.Header.Get("Content-Disposition")),
 		mimeType: resp.Header.Get("Content-Type"),
 	}, nil
+}
+
+// verifySign enforces the CDN-cache integrity guard: the backend echoes the
+// per-request signature on every download response, and the +download flow
+// only writes bytes whose echoed signature matches the one we requested. Both
+// a missing header (can't verify) and a mismatch are fail-closed — they abort
+// the download so a mis-served object never reaches disk. The comparison is
+// case-insensitive, matching the header's case-insensitive contract.
+func verifySign(got, want string) error {
+	got = strings.TrimSpace(got)
+	if got == "" {
+		return fmt.Errorf("%w (%s)", ErrFileSignMissing, signHeader)
+	}
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("%w: response signature %q, requested %q", ErrFileSignMismatch, got, want)
+	}
+	return nil
 }
 
 // filenameFromHeader extracts the filename from a Content-Disposition header.
