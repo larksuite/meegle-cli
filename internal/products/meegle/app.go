@@ -64,18 +64,51 @@ type StaticCommands struct {
 	URL        *cobra.Command
 }
 
+// offlineCommands are top-level commands that don't need the dynamically
+// discovered tool tree, so NewCLIApp skips startup MCP discovery for them.
+// `completion` is the key case: shell rc files run `meegle completion zsh` on
+// every new shell, where a discovery round-trip would stall startup. (auth
+// still makes its own token calls at run time; only tree discovery is skipped.)
+// Excluded — they need or show the tree: help, inspect, the runtime
+// __complete, and all business commands.
+var offlineCommands = map[string]bool{
+	"completion": true,
+	"auth":       true,
+	"config":     true,
+	"url":        true,
+	"version":    true,
+}
+
+// isOfflineCommand reports whether argv invokes an offlineCommands entry. Keyed
+// on args[0]: leading global flags (e.g. `--profile p config get`) fall through
+// to discovery — at worst one redundant lookup, never a missing tree.
+func isOfflineCommand(args []string) bool {
+	return len(args) > 0 && offlineCommands[args[0]]
+}
+
 // NewCLIApp assembles the meegle CLI application, injecting the four customization points.
 // staticCmds are optional static subcommands (auth/config/inspect) used to break circular dependencies.
 func NewCLIApp(version string, staticCmds *StaticCommands) (*cliapp.App, error) {
-	// 1. Load default configuration (graceful: use empty config on failure)
-	profileName, _ := GetCurrentProfileName()
-	cfg, _ := LoadConfig(profileName)
+	// Skip identity resolution + MCP discovery for commands that need only the
+	// static command set — chiefly `completion`, re-run on every shell startup.
+	skipDiscovery := isOfflineCommand(os.Args[1:])
 
-	// 2. Build MCP client (if host + token are configured)
-	client, ident := buildMcpClient(cfg, profileName)
+	var (
+		client *mcpclient.Client
+		ident  ResolvedIdentity
+		cache  *ToolCache
+	)
+	if !skipDiscovery {
+		// 1. Load default configuration (graceful: use empty config on failure)
+		profileName, _ := GetCurrentProfileName()
+		cfg, _ := LoadConfig(profileName)
 
-	// 3. Build ToolCache
-	cache := NewToolCache(GetCacheDir(), profileName, DefaultTTL)
+		// 2. Build MCP client (if host + token are configured)
+		client, ident = buildMcpClient(cfg, profileName)
+
+		// 3. Build ToolCache
+		cache = NewToolCache(GetCacheDir(), profileName, DefaultTTL)
+	}
 
 	// 4. Create DynamicRegistrySetup (client may be nil; avoid the typed nil interface pitfall)
 	var lister discovery.ToolLister
