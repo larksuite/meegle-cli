@@ -6,12 +6,14 @@ package meegle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 	frameworkoutput "github.com/larksuite/meegle-cli/pkg/framework/output"
 	"github.com/larksuite/meegle-cli/pkg/framework/pipeline"
@@ -501,6 +503,64 @@ func TestMcpExecutorStep_CustomAuthHeader_OverridesStaticHeader(t *testing.T) {
 	}
 }
 
+func TestMcpExecutorStep_MyWorkTodoActionInfoErrorAddsSuggestion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID int64 `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body.ID,
+			"result": map[string]any{
+				"isError": true,
+				"content": []map[string]any{{
+					"type": "text",
+					"text": "id=1000050815, code=1000050815, message=Invalid parameter, chain=[bytedance.bits.search:get action info fail, please retry]",
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	step := &McpExecutorStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"mywork", "todo"},
+			Node:     &registry.CommandNode{HandlerRef: "list_todo"},
+			Flags: map[string]any{
+				"action":   "this_week",
+				"page-num": "1",
+			},
+			ExplicitFlags: map[string]any{
+				"action":   "this_week",
+				"page-num": "1",
+			},
+		},
+		OutputConfig: map[string]any{
+			"mcp.host":       "ignored.example.com",
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+
+	err := step.Execute(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected backend error")
+	}
+	var me *meerrors.MeegleError
+	if !strings.Contains(err.Error(), "get action info fail") || !errors.As(err, &me) {
+		t.Fatalf("expected MeegleError with backend message, got %T %v", err, err)
+	}
+	if !strings.Contains(me.Suggestion, "--asset-key Asset_xxx") {
+		t.Fatalf("expected asset-key suggestion, got %q", me.Suggestion)
+	}
+	if !strings.Contains(me.Suggestion, "meegle --refresh mywork todo") {
+		t.Fatalf("expected refresh suggestion, got %q", me.Suggestion)
+	}
+}
+
 func TestMcpExecutorStep_SkipsGroupNode(t *testing.T) {
 	step := &McpExecutorStep{}
 	state := &pipeline.PipelineContext{
@@ -648,6 +708,57 @@ func TestMcpExecutorStep_DryRunNoValidationWhenAllParamsValid(t *testing.T) {
 	data := state.Result.Data.(map[string]any)
 	if _, present := data["validation"]; present {
 		t.Errorf("validation should be absent when no unknown params, got %#v", data["validation"])
+	}
+}
+
+func TestMcpExecutorStep_DryRunSkipsMeegleRuntimeFlags(t *testing.T) {
+	step := &McpExecutorStep{}
+	tagsJSON := `{"action":"string","page-num":"number"}`
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"mywork", "todo"},
+			Node: &registry.CommandNode{
+				HandlerRef: "list_todo",
+				Meta:       registry.NodeMeta{Tags: map[string]string{"mcp_param_types": tagsJSON}},
+			},
+			Flags: map[string]any{
+				"dry-run":  true,
+				"refresh":  true,
+				"profile":  "default",
+				"action":   "this_week",
+				"page-num": "1",
+			},
+			ExplicitFlags: map[string]any{
+				"dry-run":  true,
+				"refresh":  true,
+				"profile":  "default",
+				"action":   "this_week",
+				"page-num": "1",
+			},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("dry-run execute: %v", err)
+	}
+	data, ok := state.Result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T", state.Result.Data)
+	}
+	params, ok := data["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("params not a map: %#v", data["params"])
+	}
+	if _, ok := params["refresh"]; ok {
+		t.Fatalf("refresh should not be sent to backend: %#v", params)
+	}
+	if _, ok := params["profile"]; ok {
+		t.Fatalf("profile should not be sent to backend: %#v", params)
+	}
+	if params["action"] != "this_week" || params["page_num"] != float64(1) {
+		t.Fatalf("business params changed unexpectedly: %#v", params)
+	}
+	if _, present := data["validation"]; present {
+		t.Fatalf("runtime flags should not appear as unknown params: %#v", data["validation"])
 	}
 }
 

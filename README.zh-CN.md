@@ -85,7 +85,15 @@ meegle inspect workitem.create
 npm install -g @lark-project/meegle
 ```
 
-**Step 2 — 持久化 host**
+**Step 2 — 安装 Agent Skill**
+
+> 推荐用于 AI Agent 场景；如果只是手动使用 CLI，则是可选步骤。Skill 会教 Agent 正确选择和执行 `meegle` 命令。
+
+```bash
+npx skills add larksuite/meegle-cli -y -g
+```
+
+**Step 3 — 持久化 host**
 
 ```bash
 meegle config set host <host>
@@ -93,7 +101,7 @@ meegle config set host <host>
 
 `<host>` 示例：`project.feishu.cn`、`meegle.com`，或自建租户域名（如 `your-tenant.example.com`）。
 
-**Step 3 — Device Code 登录**
+**Step 4 — Device Code 登录**
 
 > 建议后台执行。命令会输出授权 URL —— 提取后发给用户，用户在浏览器完成授权后命令自动退出。
 
@@ -107,7 +115,7 @@ meegle auth login --device-code
 meegle auth login --device-code --host <host>
 ```
 
-**Step 4 — 验证**
+**Step 5 — 验证**
 
 ```bash
 meegle auth status
@@ -331,6 +339,11 @@ meegle mywork todo --action done --page-num 1
 # 逾期事项
 meegle mywork todo --action overdue --page-num 1
 ```
+
+如果 `mywork todo` 返回 `get action info fail`，先刷新命令元数据：
+`meegle --refresh mywork todo --action this_week --page-num 1`。如果账号同时属于多个工作区，
+请显式传入工作区 key：
+`meegle mywork todo --action this_week --page-num 1 --asset-key Asset_xxx`。
 
 ### 查询工作项
 

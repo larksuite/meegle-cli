@@ -236,6 +236,9 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 	// master's makeRunFunc also only collects Changed flags
 	explicitKeys := make(map[string]bool)
 	for k := range state.Parsed.ExplicitFlags {
+		if isMeegleRuntimeFlag(k) {
+			continue
+		}
 		explicitKeys[k] = true
 	}
 
@@ -296,6 +299,7 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 		if me, ok := err.(*meerrors.MeegleError); ok && s.CommandsFunc != nil {
 			me.Message = sanitizeToolNames(me.Message, s.CommandsFunc())
 		}
+		attachMyWorkTodoSuggestion(err, state, toolName)
 		return err
 	}
 	if resp != nil {
@@ -343,6 +347,38 @@ func extractLogID(raw string) string {
 		}
 	}
 	return s
+}
+
+func isMeegleRuntimeFlag(name string) bool {
+	switch strings.ToLower(name) {
+	case "profile", "refresh":
+		return true
+	default:
+		return false
+	}
+}
+
+const hintMyWorkTodoActionInfo = `The backend could not resolve My Work action context. Try:
+  1. Refresh command metadata: meegle --refresh mywork todo --action this_week --page-num 1
+  2. Confirm the active host/profile: meegle auth status
+  3. If your account belongs to multiple workspaces, retry with the workspace key: meegle mywork todo --action this_week --page-num 1 --asset-key Asset_xxx`
+
+func attachMyWorkTodoSuggestion(err error, state *pipeline.PipelineContext, toolName string) {
+	me, ok := err.(*meerrors.MeegleError)
+	if !ok || strings.TrimSpace(me.Suggestion) != "" {
+		return
+	}
+	if toolName != "list_todo" {
+		return
+	}
+	if state == nil || state.Parsed == nil || strings.Join(state.Parsed.FullPath, " ") != "mywork todo" {
+		return
+	}
+	msg := strings.ToLower(me.Message)
+	if !strings.Contains(msg, "get action info fail") {
+		return
+	}
+	me.Suggestion = hintMyWorkTodoActionInfo
 }
 
 func discoveryFailureCommandError(state *pipeline.PipelineContext) error {
