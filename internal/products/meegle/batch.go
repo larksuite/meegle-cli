@@ -549,6 +549,9 @@ func batchSharedParams(state *pipeline.PipelineContext) map[string]any {
 
 	explicit := make(map[string]bool, len(state.Parsed.ExplicitFlags))
 	for k := range state.Parsed.ExplicitFlags {
+		if isMeegleRuntimeFlag(k) {
+			continue
+		}
 		explicit[k] = true
 	}
 

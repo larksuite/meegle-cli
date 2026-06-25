@@ -8,6 +8,13 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.10] - 2026-06-25
+
+### Fixed
+
+- `mywork todo` now adds an actionable troubleshooting suggestion when the backend returns `get action info fail`, pointing users to refresh command metadata and pass `--asset-key` for multi-workspace accounts.
+- Meegle runtime flags such as `--refresh` and `--profile` are no longer forwarded as backend tool parameters when passed explicitly on dynamic commands.
+
 ## [v1.0.9] - 2026-06-11
 
 ### Added

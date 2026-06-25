@@ -85,7 +85,15 @@ The default `meegle auth login` uses an arrow-key host picker plus a browser OAu
 npm install -g @lark-project/meegle
 ```
 
-**Step 2 — Persist the host**
+**Step 2 — Install the Agent Skill**
+
+> Recommended for AI-agent workflows, optional for direct CLI use. The skill teaches agents how to choose and run `meegle` commands correctly.
+
+```bash
+npx skills add larksuite/meegle-cli -y -g
+```
+
+**Step 3 — Persist the host**
 
 ```bash
 meegle config set host <host>
@@ -93,7 +101,7 @@ meegle config set host <host>
 
 Examples of `<host>`: `project.feishu.cn`, `meegle.com`, or your self-hosted tenant domain such as `your-tenant.example.com`.
 
-**Step 3 — Log in with Device Code**
+**Step 4 — Log in with Device Code**
 
 > Run this command in the background. It prints an authorization URL — extract it and send it to the user. The command exits automatically once the user completes authorization in the browser.
 
@@ -107,7 +115,7 @@ Alternatively, pass the host inline each time without persisting it:
 meegle auth login --device-code --host <host>
 ```
 
-**Step 4 — Verify**
+**Step 5 — Verify**
 
 ```bash
 meegle auth status
@@ -331,6 +339,11 @@ meegle mywork todo --action done --page-num 1
 # Overdue items
 meegle mywork todo --action overdue --page-num 1
 ```
+
+If `mywork todo` fails with `get action info fail`, refresh command metadata first:
+`meegle --refresh mywork todo --action this_week --page-num 1`. If your account
+belongs to multiple workspaces, pass the workspace key explicitly:
+`meegle mywork todo --action this_week --page-num 1 --asset-key Asset_xxx`.
 
 ### Querying Work Items
 

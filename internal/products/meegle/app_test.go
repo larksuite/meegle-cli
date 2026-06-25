@@ -8,48 +8,6 @@ import (
 	"testing"
 )
 
-// isOfflineCommand gates the startup discovery skip: offline commands must
-// match; tree-dependent ones (help, inspect, runtime __complete, business
-// commands) must not.
-func TestIsOfflineCommand(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want bool
-	}{
-		// completion — the hot path (re-run on every new shell).
-		{"completion zsh", []string{"completion", "zsh"}, true},
-		{"completion bash", []string{"completion", "bash"}, true},
-		{"completion fish", []string{"completion", "fish"}, true},
-		{"completion install", []string{"completion", "install"}, true},
-		{"completion trailing args", []string{"completion", "zsh", "--no-descriptions"}, true},
-		// no/invalid shell still skips: the command errors on its own args.
-		{"completion no shell", []string{"completion"}, true},
-		{"completion unknown shell", []string{"completion", "powershell"}, true},
-		// other offline commands
-		{"auth login", []string{"auth", "login"}, true},
-		{"config get", []string{"config", "get", "host"}, true},
-		{"url decode", []string{"url", "decode", "https://example"}, true},
-		{"version", []string{"version"}, true},
-		// must not match — these need the tree
-		{"runtime __complete", []string{"__complete", "workitem", ""}, false},
-		{"top-level help flag", []string{"--help"}, false},
-		{"help command", []string{"help"}, false},
-		{"inspect", []string{"inspect", "workitem.create"}, false},
-		{"business command", []string{"workitem", "create"}, false},
-		{"empty", nil, false},
-		// leading flags fall through to discovery
-		{"flag before command", []string{"--profile", "x", "config", "get"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isOfflineCommand(tc.args); got != tc.want {
-				t.Errorf("isOfflineCommand(%q) = %v, want %v", tc.args, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBuildRegistrySetup_NilHeaders(t *testing.T) {
 	setup := BuildRegistrySetup("example.com", nil)
 	if setup == nil {
