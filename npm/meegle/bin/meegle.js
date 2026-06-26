@@ -15,30 +15,38 @@ const arch = os.arch();
 const ext = platform === "win32" ? ".exe" : "";
 const binName = `meegle-${platform}-${arch}${ext}`;
 const binPath = path.join(__dirname, binName);
+const args = process.argv.slice(2);
 
-try {
-  fs.accessSync(binPath, fs.constants.X_OK);
-} catch {
-  const detected = `${platform}-${arch}`;
-  const isSupported = SUPPORTED.includes(detected);
-  console.error(
-    isSupported
-      ? `meegle binary is missing or not executable.\n` +
-        `Detected platform: ${detected}\n` +
-        `Expected binary at: ${binPath}\n` +
-        `Try reinstalling: npm i -g @lark-project/meegle\n` +
-        `If the problem persists, please file an issue with the output of: node -v && npm -v`
-      : `Unsupported platform: ${detected}\n` +
-        `Supported platforms: ${SUPPORTED.join(", ")}`
-  );
-  process.exit(1);
+if (args[0] === "install") {
+  Promise.resolve(require("./install-wizard.js").main(args.slice(1))).catch((err) => {
+    console.error("Unexpected install error:", err && err.message ? err.message : err);
+    process.exit(1);
+  });
+} else {
+  try {
+    fs.accessSync(binPath, fs.constants.X_OK);
+  } catch {
+    const detected = `${platform}-${arch}`;
+    const isSupported = SUPPORTED.includes(detected);
+    console.error(
+      isSupported
+        ? `meegle binary is missing or not executable.\n` +
+          `Detected platform: ${detected}\n` +
+          `Expected binary at: ${binPath}\n` +
+          `Try reinstalling: npm i -g @lark-project/meegle\n` +
+          `If the problem persists, please file an issue with the output of: node -v && npm -v`
+        : `Unsupported platform: ${detected}\n` +
+          `Supported platforms: ${SUPPORTED.join(", ")}`
+    );
+    process.exit(1);
+  }
+
+  const result = spawnSync(binPath, args, { stdio: "inherit" });
+
+  // Re-raise the signal so parent shells see the real cause (e.g. 130 for SIGINT)
+  // instead of a generic exit 1.
+  if (result.signal) {
+    process.kill(process.pid, result.signal);
+  }
+  process.exit(result.status ?? 1);
 }
-
-const result = spawnSync(binPath, process.argv.slice(2), { stdio: "inherit" });
-
-// Re-raise the signal so parent shells see the real cause (e.g. 130 for SIGINT)
-// instead of a generic exit 1.
-if (result.signal) {
-  process.kill(process.pid, result.signal);
-}
-process.exit(result.status ?? 1);

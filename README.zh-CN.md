@@ -12,7 +12,7 @@
 
 ## 为什么选择 Meegle CLI？
 
-- **Agent 友好** — 附带一份 [AI Agent Skill](#ai-agent-skill)，一条命令即可把 Meegle 操作手册喂给 Trae、Claude Code、Cursor、Windsurf、Gemini CLI 等主流 Agent。CLI 命令同时面向人类和 Agent 设计，结构化 JSON 输出、`--dry-run` 预览、`--device-code` 无 TTY 流程
+- **Agent 友好** — 安装向导会安装内置 AI Agent Skill，把 Meegle 操作手册喂给 Trae、Claude Code、Cursor、Windsurf、Gemini CLI 等主流 Agent。CLI 命令同时面向人类和 Agent 设计，结构化 JSON 输出、`--dry-run` 预览、`--device-code` 无 TTY 流程
 - **覆盖完整** — 16 个业务域（工作项、工作流、子任务、评论、工时、关联、我的工作、视图、图表、团队、用户、空间、附件、交付物、资源库、WBS 计划表），50+ 命令映射到 Meegle 核心能力
 - **两层参数模型** — 日常用 `--flag-name` 轻便直接，复杂载荷（如 `fields[]`）用 `--params <json>` 兜底 —— 按场景选择合适粒度
 - **输出格式灵活** — 支持 `json` / `table` / `ndjson` / `raw`，配合 `--select` 点路径投影可直接 pipe 给其他工具
@@ -47,22 +47,21 @@
 
 - Node.js >= 16（自带 `npm` / `npx`）
 
-### 安装命令
+运行安装向导：
 
 ```bash
-npm install -g @lark-project/meegle
+npx @lark-project/meegle@latest install
 ```
+
+向导会全局安装或升级 CLI、安装 AI Agent Skill、配置 Meegle host，并启动登录。
 
 ## 快速开始（人类用户）
 
-> **给 AI Agent 的提示：** 如果你是在替用户完成这套安装的 AI Agent，请直接跳到 [快速开始（AI Agent）](#快速开始ai-agent--ci--无头环境) —— 那里有你需要的非交互步骤。
+> **给 AI Agent 的提示：** 如果你是在替用户完成这套安装的 AI Agent，请直接跳到 [快速开始（AI Agent）](#快速开始ai-agent--ci--无头环境) —— 那里有你需要的非交互命令。
 
 ```bash
-# （可选）持久化 host，后续登录就不用再选菜单
-meegle config set host <host>
-
-# 1. 登录（上下选择 host + 浏览器 OAuth）
-meegle auth login
+# 1. 安装 CLI + Skill，配置 host，并登录
+npx @lark-project/meegle@latest install
 
 # 2. 查看本周待办
 meegle mywork todo --action this_week --page-num 1
@@ -77,45 +76,17 @@ meegle inspect workitem.create
 
 ## 快速开始（AI Agent / CI / 无头环境）
 
-`meegle auth login` 默认走上下选择菜单 + 浏览器 OAuth 回调，依赖真实 TTY，在 CI Runner、管道、Claude Code 这类没有 TTY 的环境里会挂起或报错。这些场景请改用 Device Code 流程 —— 命令会输出授权 URL，让用户在浏览器里完成授权。
-
-**Step 1 — 安装 CLI**
+默认浏览器 OAuth 流程依赖真实 TTY。在 CI Runner、管道、Claude Code 这类环境里，使用同一个安装向导，但显式传入 host 并启用 Device Code 登录：
 
 ```bash
-npm install -g @lark-project/meegle
-```
-
-**Step 2 — 安装 Agent Skill**
-
-> 推荐用于 AI Agent 场景；如果只是手动使用 CLI，则是可选步骤。Skill 会教 Agent 正确选择和执行 `meegle` 命令。
-
-```bash
-npx skills add larksuite/meegle-cli -y -g
-```
-
-**Step 3 — 持久化 host**
-
-```bash
-meegle config set host <host>
+npx -y @lark-project/meegle@latest install --host <host> --device-code --lang zh
 ```
 
 `<host>` 示例：`project.feishu.cn`、`meegle.com`，或自建租户域名（如 `your-tenant.example.com`）。
 
-**Step 4 — Device Code 登录**
+Device Code 流程会输出授权 URL；把链接发给用户，并保持命令运行直到用户在浏览器完成授权。
 
-> 建议后台执行。命令会输出授权 URL —— 提取后发给用户，用户在浏览器完成授权后命令自动退出。
-
-```bash
-meegle auth login --device-code
-```
-
-如不想持久化 host，也可以每次显式传入：
-
-```bash
-meegle auth login --device-code --host <host>
-```
-
-**Step 5 — 验证**
+验证：
 
 ```bash
 meegle auth status
@@ -125,19 +96,7 @@ meegle auth status
 
 ## AI Agent Skill
 
-`skills/meegle/` 是一份可直接加载的 **skill**，用来教 AI Agent —— Trae、Claude Code、Cursor、Windsurf、Gemini CLI、GitHub Copilot CLI —— 通过本 CLI 操作 Meegle。它把命令目录、MQL 语法、字段值写法、富文本 Markdown 规则，以及常见写入流程的 SOP 全部打包好。
-
-### 安装
-
-```bash
-# 先装 CLI（skill 底层会调用 meegle 命令）
-npm install -g @lark-project/meegle
-
-# 再加载 skill —— 会自动探测已装的 Agent，并在各自的 skill 目录里登记
-npx skills add larksuite/meegle-cli -y -g
-```
-
-`npx skills add` 会从仓库读取 `skills/meegle/SKILL.md`，写入本机所有 Agent CLI 的 skill 目录。每次升级重跑一遍即可拉取最新内容。
+安装向导会安装 `skills/meegle/`，这是一份可直接加载到 Trae、Claude Code、Cursor、Windsurf、Gemini CLI、GitHub Copilot CLI 等 Agent 的 skill。它会教 Agent 通过本 CLI 操作 Meegle，而不是从自然语言说明里猜命令形状。
 
 ### 覆盖内容
 
@@ -148,19 +107,15 @@ npx skills add larksuite/meegle-cli -y -g
 - **SOP** — 创建工作项、节点流转、状态流转、更新字段等场景的分步剧本
 - **授权守护** — 所有业务命令前强制先过 `meegle auth status`
 
-完整内容见 [skills/meegle/SKILL.md](./skills/meegle/SKILL.md) 和 [skills/meegle/references/](./skills/meegle/references/)。
-
 ### 使用方式
 
-安装后直接用自然语言和 Agent 对话。例如 Trae：
+安装向导执行完成后，直接用自然语言和 Agent 对话。例如：
 
 ```
 帮我看一下 PROJ 空间本周待办里的 P0 需求
 ```
 
 Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--dry-run`（见 [安全](#安全与风险提示)）可以在 Agent 真正执行副作用前先预览请求。
-
-> 小提示：skill 的名字 `meegle` 和 CLI 二进制同名。文档里提到 **`meegle` skill** 时指 `skills/meegle/` 里的文件；提到 **`meegle` CLI** 时指你 PATH 上的 `meegle` 命令。
 
 ## 命令一览
 
