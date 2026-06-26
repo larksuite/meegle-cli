@@ -8,6 +8,16 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.11] - 2026-06-26
+
+### Added
+
+- `meegle install` now runs a one-stop setup wizard for npm users: install or upgrade the CLI globally, install the AI Agent Skill, configure the host, and start browser or Device Code login. This enables `npx @lark-project/meegle@latest install` as the primary quick-start command.
+
+### Fixed
+
+- The install wizard now invokes the `skills` CLI through `npm exec --package=skills` so `skills add` and `skills ls` are parsed reliably across npm/npx versions. A real isolated install smoke test previously exposed that `npx -y skills add ...` could be misparsed as `add@latest`.
+
 ## [v1.0.10] - 2026-06-25
 
 ### Fixed

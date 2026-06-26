@@ -12,7 +12,7 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 
 ## Why Meegle CLI?
 
-- **Agent-Native** — Ships a bundled [AI Agent Skill](#ai-agent-skill) that teaches Trae, Claude Code, Cursor, Windsurf, Gemini CLI and other agents how to drive Meegle with one command. Every CLI command is designed for both humans and agents, with structured JSON output, `--dry-run` previews, and `--device-code` flows for non-TTY environments
+- **Agent-Native** — The setup wizard installs the bundled AI Agent Skill for Trae, Claude Code, Cursor, Windsurf, Gemini CLI and other agents. Every CLI command is designed for both humans and agents, with structured JSON output, `--dry-run` previews, and `--device-code` flows for non-TTY environments
 - **Broad Coverage** — 16 business domains (work items, workflow, subtasks, comments, work hours, relations, my-work, views, charts, team, user, project, attachments, deliverables, resource library, WBS plan tables) and 50+ commands mapping to Meegle's core capabilities
 - **Two-Layer Parameters** — Ergonomic `--flag-name` for everyday use, fallback `--params <json>` for complex payloads like `fields[]` — pick the right granularity per call
 - **Flexible Output** — `json` / `table` / `ndjson` / `raw`, with `--select` dot-path projection for piping to other tools
@@ -47,22 +47,21 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 
 - Node.js >= 16 (ships with `npm` / `npx`)
 
-### Install
+Run the setup wizard:
 
 ```bash
-npm install -g @lark-project/meegle
+npx @lark-project/meegle@latest install
 ```
+
+The wizard installs or upgrades the CLI globally, installs the AI Agent Skill, configures the Meegle host, and starts login.
 
 ## Quick Start (Human Users)
 
-> **Note for AI assistants:** if you are an AI Agent helping the user set this up, jump directly to [Quick Start (AI Agent)](#quick-start-ai-agent--ci--headless) — it contains the non-interactive steps you need.
+> **Note for AI assistants:** if you are an AI Agent helping the user set this up, jump directly to [Quick Start (AI Agent)](#quick-start-ai-agent--ci--headless) — it contains the non-interactive command you need.
 
 ```bash
-# (Optional) Persist the host so future logins skip the arrow-key picker
-meegle config set host <host>
-
-# 1. Log in (arrow-key host picker + browser OAuth)
-meegle auth login
+# 1. Install CLI + Skill, configure host, and log in
+npx @lark-project/meegle@latest install
 
 # 2. View this week's to-dos
 meegle mywork todo --action this_week --page-num 1
@@ -77,45 +76,15 @@ meegle inspect workitem.create
 
 ## Quick Start (AI Agent / CI / Headless)
 
-The default `meegle auth login` uses an arrow-key host picker plus a browser OAuth callback — both require a real TTY, so they will hang or fail in CI runners, pipes, and agent shells like Claude Code. Use the Device Code flow instead: it prints an authorization URL that the user opens in any browser.
-
-**Step 1 — Install the CLI**
+The default browser OAuth flow requires a real TTY. In CI runners, pipes, and agent shells like Claude Code, run the same setup wizard with an explicit host and Device Code login:
 
 ```bash
-npm install -g @lark-project/meegle
+npx -y @lark-project/meegle@latest install --host <host> --device-code --lang en
 ```
 
-**Step 2 — Install the Agent Skill**
+Examples of `<host>`: `project.feishu.cn`, `meegle.com`, or your self-hosted tenant domain such as `your-tenant.example.com`. The Device Code flow prints an authorization URL; send it to the user and keep the command running until authorization completes.
 
-> Recommended for AI-agent workflows, optional for direct CLI use. The skill teaches agents how to choose and run `meegle` commands correctly.
-
-```bash
-npx skills add larksuite/meegle-cli -y -g
-```
-
-**Step 3 — Persist the host**
-
-```bash
-meegle config set host <host>
-```
-
-Examples of `<host>`: `project.feishu.cn`, `meegle.com`, or your self-hosted tenant domain such as `your-tenant.example.com`.
-
-**Step 4 — Log in with Device Code**
-
-> Run this command in the background. It prints an authorization URL — extract it and send it to the user. The command exits automatically once the user completes authorization in the browser.
-
-```bash
-meegle auth login --device-code
-```
-
-Alternatively, pass the host inline each time without persisting it:
-
-```bash
-meegle auth login --device-code --host <host>
-```
-
-**Step 5 — Verify**
+Verify:
 
 ```bash
 meegle auth status
@@ -125,19 +94,7 @@ For fully unattended CI (no human-in-the-loop), inject a token via environment v
 
 ## AI Agent Skill
 
-`skills/meegle/` is a drop-in **skill** that teaches AI Agents — Trae, Claude Code, Cursor, Windsurf, Gemini CLI, GitHub Copilot CLI — how to operate Meegle through this CLI. It bundles the command catalog, MQL syntax, field-value conventions, rich-text Markdown rules, and standard operating procedures for common write flows.
-
-### Install
-
-```bash
-# Install the CLI first (the skill calls `meegle` under the hood)
-npm install -g @lark-project/meegle
-
-# Then add the skill — auto-detects installed agents and registers in each
-npx skills add larksuite/meegle-cli -y -g
-```
-
-`npx skills add` reads `skills/meegle/SKILL.md` from the repo and drops it into the skill directory of every agent CLI it finds on the machine. Re-run any time to pick up updates.
+The setup wizard installs `skills/meegle/`, a drop-in skill for Trae, Claude Code, Cursor, Windsurf, Gemini CLI, GitHub Copilot CLI, and other agents. It teaches agents how to operate Meegle through this CLI instead of guessing command shapes from prose.
 
 ### What it covers
 
@@ -148,19 +105,15 @@ npx skills add larksuite/meegle-cli -y -g
 - **SOPs** — step-by-step playbooks for creating work items, transitioning nodes, transitioning states, and updating fields
 - **Auth guard** — the skill refuses to run business commands until `meegle auth status` succeeds
 
-See [skills/meegle/SKILL.md](./skills/meegle/SKILL.md) and [skills/meegle/references/](./skills/meegle/references/) for the full contents.
-
 ### Usage
 
-Once installed, just ask the agent in natural language. For example, in Trae:
+Once the setup wizard has run, ask the agent in natural language. For example:
 
 ```
 Show me this week's P0 stories in the PROJ space.
 ```
 
 The agent consults the skill, picks the right `meegle` commands, and runs them for you. Pair with `--dry-run` (see [Security](#security--risk-warnings)) to preview side-effectful operations before the agent commits them.
-
-> Heads up: the skill name `meegle` is the same string as the CLI binary. When documentation refers to "the **`meegle` skill**" it means the files in `skills/meegle/`; when it refers to "the **`meegle` CLI**" it means the `meegle` command on your PATH.
 
 ## Commands
 
