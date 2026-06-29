@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.12] - 2026-06-29
+
+### Fixed
+
+- The install wizard now always installs the AI Agent Skill instead of trying to detect a prior install. The previous name-substring check matched sibling skills such as `meegle-plugin` and silently skipped installing the core `meegle` skill. `skills add` is idempotent, so re-running it on an already-installed skill simply upgrades or no-ops.
+
 ## [v1.0.11] - 2026-06-26
 
 ### Added
