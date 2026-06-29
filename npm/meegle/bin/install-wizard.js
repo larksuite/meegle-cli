@@ -23,7 +23,6 @@ const messages = {
     installedSkip: "Already installed globally (v%s). Skipped",
     installed: "CLI installed globally",
     skills: "Installing AI Agent Skill...",
-    skillsSkip: "AI Agent Skill already appears to be installed. Skipped",
     skillsDone: "AI Agent Skill installed",
     hostExisting: "Found existing host: %s. Use it?",
     hostSelect: "Select Meegle site",
@@ -46,7 +45,6 @@ const messages = {
     installedSkip: "已全局安装 (v%s)，跳过",
     installed: "CLI 已全局安装",
     skills: "正在安装 AI Agent Skill...",
-    skillsSkip: "检测到 AI Agent Skill 可能已安装，跳过",
     skillsDone: "AI Agent Skill 已安装",
     hostExisting: "发现已有 host: %s，继续使用？",
     hostSelect: "请选择 Meegle 站点",
@@ -270,21 +268,12 @@ async function stepInstallGlobally(msg) {
   console.log(msg.installed);
 }
 
-async function skillsAlreadyInstalled() {
-  try {
-    const out = runSilent("npm", ["exec", "--yes", "--package=skills", "--", "skills", "ls", "-g"], { timeout: 120000 });
-    return /\bmeegle\b/i.test(out);
-  } catch (_) {
-    return false;
-  }
-}
-
 async function stepInstallSkills(msg) {
   console.log(msg.skills);
-  if (await skillsAlreadyInstalled()) {
-    console.log(msg.skillsSkip);
-    return;
-  }
+  // `skills add` is idempotent (with `-y`): re-running on an already-installed
+  // skill just upgrades / no-ops. We always run it instead of trying to detect
+  // prior installs — name-substring detection mis-fired on sibling skills like
+  // `meegle-plugin` and silently skipped the core skill.
   run("npm", ["exec", "--yes", "--package=skills", "--", "skills", "add", SKILLS_REPO, "-y", "-g"], { timeout: 120000 });
   console.log(msg.skillsDone);
 }
