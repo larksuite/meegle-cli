@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.13] - 2026-06-30
+
+### Fixed
+
+- Corrected the npm quick-start commands to invoke the package binary explicitly: `npx @lark-project/meegle@latest meegle install`. The previous `npx @lark-project/meegle@latest install` form could resolve `install` as the system command instead of the Meegle CLI binary in some agent shells, causing the setup wizard to be skipped.
+
 ## [v1.0.12] - 2026-06-29
 
 ### Fixed
@@ -18,7 +24,7 @@ versioned section on each npm release.
 
 ### Added
 
-- `meegle install` now runs a one-stop setup wizard for npm users: install or upgrade the CLI globally, install the AI Agent Skill, configure the host, and start browser or Device Code login. This enables `npx @lark-project/meegle@latest install` as the primary quick-start command.
+- `meegle install` now runs a one-stop setup wizard for npm users: install or upgrade the CLI globally, install the AI Agent Skill, configure the host, and start browser or Device Code login. This enables `npx @lark-project/meegle@latest meegle install` as the primary quick-start command.
 
 ### Fixed
 
