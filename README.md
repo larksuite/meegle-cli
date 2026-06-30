@@ -50,7 +50,7 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 Run the setup wizard:
 
 ```bash
-npx @lark-project/meegle@latest install
+npx @lark-project/meegle@latest meegle install
 ```
 
 The wizard installs or upgrades the CLI globally, installs the AI Agent Skill, configures the Meegle host, and starts login.
@@ -61,7 +61,7 @@ The wizard installs or upgrades the CLI globally, installs the AI Agent Skill, c
 
 ```bash
 # 1. Install CLI + Skill, configure host, and log in
-npx @lark-project/meegle@latest install
+npx @lark-project/meegle@latest meegle install
 
 # 2. View this week's to-dos
 meegle mywork todo --action this_week --page-num 1
@@ -79,7 +79,7 @@ meegle inspect workitem.create
 The default browser OAuth flow requires a real TTY. In CI runners, pipes, and agent shells like Claude Code, run the same setup wizard with an explicit host and Device Code login:
 
 ```bash
-npx -y @lark-project/meegle@latest install --host <host> --device-code --lang en
+npx -y @lark-project/meegle@latest meegle install --host <host> --device-code --lang en
 ```
 
 Examples of `<host>`: `project.feishu.cn`, `meegle.com`, or your self-hosted tenant domain such as `your-tenant.example.com`. The Device Code flow prints an authorization URL; send it to the user and keep the command running until authorization completes.
