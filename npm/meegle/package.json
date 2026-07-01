@@ -1,6 +1,6 @@
 {
   "name": "@lark-project/meegle",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Agent-First CLI for Meegle (Lark Project)",
   "license": "MIT",
   "homepage": "https://github.com/larksuite/meegle-cli#readme",

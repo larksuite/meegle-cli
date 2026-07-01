@@ -50,7 +50,7 @@
 运行安装向导：
 
 ```bash
-npx @lark-project/meegle@latest meegle install
+npx @lark-project/meegle@latest install
 ```
 
 向导会全局安装或升级 CLI、安装 AI Agent Skill、配置 Meegle host，并启动登录。
@@ -61,7 +61,7 @@ npx @lark-project/meegle@latest meegle install
 
 ```bash
 # 1. 安装 CLI + Skill，配置 host，并登录
-npx @lark-project/meegle@latest meegle install
+npx @lark-project/meegle@latest install
 
 # 2. 查看本周待办
 meegle mywork todo --action this_week --page-num 1
@@ -79,7 +79,7 @@ meegle inspect workitem.create
 默认浏览器 OAuth 流程依赖真实 TTY。在 CI Runner、管道、Claude Code 这类环境里，使用同一个安装向导，但显式传入 host 并启用 Device Code 登录：
 
 ```bash
-npx -y @lark-project/meegle@latest meegle install --host <host> --device-code --lang zh
+npx -y @lark-project/meegle@latest install --host <host> --device-code --lang zh
 ```
 
 `<host>` 示例：`project.feishu.cn`、`meegle.com`，或自建租户域名（如 `your-tenant.example.com`）。
