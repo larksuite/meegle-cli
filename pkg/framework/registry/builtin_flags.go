@@ -11,4 +11,5 @@ var BuiltinFlags = []FlagDef{
 	{Name: "select", Type: FlagTypeString, Description: "Field projection; comma-separated dot paths, e.g. id,creator.email."},
 	{Name: "envelope", Type: FlagTypeBool, Description: "Wrap result in {data, meta, error} envelope."},
 	{Name: "verbose", Short: "v", Type: FlagTypeBool, Description: "Show more columns in --format table."},
+	{Name: "auto-paginate", Type: FlagTypeBool, Description: "Automatically fetch and merge all pages when the response contains pagination signals (next_page_token or pagination.has_more)."},
 }

@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.15] - 2026-07-07
+
+### Added
+
+- New `--auto-paginate` global flag. When set, the CLI inspects the first response for pagination signals (`next_page_token` or `pagination.has_more`) and automatically fetches subsequent pages, concatenating list arrays into a single merged payload. Supports both token-based and `page_num`-based pagination. A 200-page safety cap and a 3-consecutive-empty-page streak guard prevent runaway loops against stuck cursors; when the cap is hit the merged result is returned with `truncated: true` and a continuation token/page number in `meta`, alongside a stderr hint. Batch (`+batch-get`) and attachment shortcut commands are exempt — they manage their own multi-call execution paths.
+
 ## [v1.0.14] - 2026-07-01
 
 ### Fixed
