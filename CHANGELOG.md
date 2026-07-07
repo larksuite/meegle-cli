@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.16] - 2026-07-07
+
+### Fixed
+
+- The v1.0.15 package metadata and docs were updated, but its bundled binaries still came from v1.0.9.
+
 ## [v1.0.15] - 2026-07-07
 
 ### Added
