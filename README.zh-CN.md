@@ -625,6 +625,7 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--verbose` | `-v` | 详细输出 |
 | `--profile` | | 指定配置 profile |
 | `--refresh` | | 从服务端刷新本地命令缓存（旁路 24 小时缓存） |
+| `--auto-paginate` | | 当响应包含分页信号（`next_page_token` 或 `pagination.has_more`）时自动拉取并合并所有页；列表数组会拼接，200 页安全上限与连续 3 空页保护防止失控循环 |
 
 ## 进阶用法
 

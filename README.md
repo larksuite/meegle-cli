@@ -640,6 +640,7 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--verbose` | `-v` | Verbose output |
 | `--profile` | | Use a specific configuration profile |
 | `--refresh` | | Refresh cached commands from server (bypass the local 24 h cache) |
+| `--auto-paginate` | | Automatically fetch and merge all pages when the response contains pagination signals (`next_page_token` or `pagination.has_more`); merged list arrays are concatenated, and a 200-page safety cap plus a 3-empty-page streak guard prevent runaway loops |
 
 ## Advanced Usage
 

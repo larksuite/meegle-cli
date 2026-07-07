@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
+	"github.com/larksuite/meegle-cli/pkg/framework/executor"
 	frameworkoutput "github.com/larksuite/meegle-cli/pkg/framework/output"
 	"github.com/larksuite/meegle-cli/pkg/framework/pipeline"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
@@ -1044,7 +1047,7 @@ func TestNewPipelineFactory(t *testing.T) {
 	}
 	expectedNames := []string{
 		"param_merge",
-		"meegle_validate", "session", "mcp_executor", "batch_executor", "attachment_shortcut", "output",
+		"meegle_validate", "session", "mcp_executor", "auto_paginate", "batch_executor", "attachment_shortcut", "output",
 	}
 	if len(pipe.Steps) != len(expectedNames) {
 		t.Fatalf("expected %d steps, got %d", len(expectedNames), len(pipe.Steps))
@@ -1287,5 +1290,1040 @@ func TestSessionStep_WritesUserAgentToOutputConfig(t *testing.T) {
 	wantSuffix := " ci-runner"
 	if !strings.HasPrefix(ua, "meegle-cli") || !strings.HasSuffix(ua, wantSuffix) {
 		t.Errorf("expected mcp.user_agent to end with ' ci-runner', got %q", ua)
+	}
+}
+
+// --- AutoPaginateStep tests ---
+
+// helper: build a minimal MCP tools/call response with a JSON payload
+func mcpJSONResponse(t *testing.T, payload any) map[string]any {
+	t.Helper()
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": string(jsonBytes)},
+			},
+		},
+	}
+}
+
+// AutoPaginateStep must be a no-op when --auto-paginate is not set.
+func TestAutoPaginateStep_NoOpWithoutFlag(t *testing.T) {
+	step := &AutoPaginateStep{}
+	originalData := map[string]any{"list": []any{"a"}}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "search_by_mql"},
+			Flags: map[string]any{}, // no auto-paginate
+		},
+		Result: &executor.RawResult{Data: originalData},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, ok := state.Result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", state.Result.Data)
+	}
+	list, _ := data["list"].([]any)
+	if len(list) != 1 || list[0] != "a" {
+		t.Errorf("data should be unchanged, got %#v", data)
+	}
+}
+
+// AutoPaginateStep must be a no-op when the result has no pagination signals.
+func TestAutoPaginateStep_NoOpWithoutPaginationSignals(t *testing.T) {
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "get_workitem_brief"},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data:     map[string]any{"name": "demo-item", "id": float64(1)},
+			Metadata: map[string]any{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data := state.Result.Data.(map[string]any)
+	if data["name"] != "demo-item" {
+		t.Errorf("data should be unchanged, got %#v", data)
+	}
+	if _, hasMeta := state.Result.Metadata["auto_paginated"]; hasMeta {
+		t.Errorf("should not set auto_paginated metadata when no pagination")
+	}
+}
+
+// page_token-based pagination: first page has next_page_token, second page
+// has none. The step should merge the list arrays and delete next_page_token.
+func TestAutoPaginateStep_PageTokenMergesPages(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body struct {
+			Params struct {
+				Arguments struct {
+					PageToken string `json:"page_token"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		var payload map[string]any
+		if body.Params.Arguments.PageToken == "" {
+			// First page
+			payload = map[string]any{
+				"list":            []any{"item1", "item2"},
+				"next_page_token": "token-page-2",
+			}
+		} else {
+			// Second page (final)
+			payload = map[string]any{
+				"list":            []any{"item3"},
+				"next_page_token": "",
+			}
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "search_by_mql"},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list":            []any{"item1", "item2"},
+				"next_page_token": "token-page-2",
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.host":       "ignored.example.com",
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Errorf("expected 1 follow-up call, got %d", callCount)
+	}
+
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 3 {
+		t.Fatalf("expected 3 merged items, got %d: %#v", len(list), list)
+	}
+	if list[0] != "item1" || list[2] != "item3" {
+		t.Errorf("merged list = %#v", list)
+	}
+	if _, exists := data["next_page_token"]; exists {
+		t.Errorf("next_page_token should be deleted after merge")
+	}
+
+	meta := state.Result.Metadata
+	if meta["auto_paginated"] != true {
+		t.Errorf("expected auto_paginated=true, got %v", meta["auto_paginated"])
+	}
+	if meta["pages_merged"] != 2 {
+		t.Errorf("expected pages_merged=2, got %v", meta["pages_merged"])
+	}
+	if meta["total_items"] != 3 {
+		t.Errorf("expected total_items=3, got %v", meta["total_items"])
+	}
+	if _, truncated := meta["truncated"]; truncated {
+		t.Errorf("should not be truncated for 2 pages")
+	}
+}
+
+// page_num-based pagination: first page has pagination.has_more=true,
+// second page has has_more=false. The step should merge and remove
+// the pagination wrapper.
+func TestAutoPaginateStep_PageNumMergesPages(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body struct {
+			Params struct {
+				Arguments struct {
+					PageNum int `json:"page_num"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		var payload map[string]any
+		if body.Params.Arguments.PageNum <= 1 {
+			payload = map[string]any{
+				"list": []any{"a", "b"},
+				"pagination": map[string]any{
+					"has_more": true,
+					"total":    float64(4),
+				},
+			}
+		} else {
+			payload = map[string]any{
+				"list": []any{"c", "d"},
+				"pagination": map[string]any{
+					"has_more": false,
+					"total":    float64(4),
+				},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				HandlerRef: "list_todo",
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					"mcp_param_types": `{"page-num":"integer"}`,
+				}},
+			},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list": []any{"a", "b"},
+				"pagination": map[string]any{
+					"has_more": true,
+					"total":    float64(4),
+				},
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.host":       "ignored.example.com",
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Errorf("expected 1 follow-up call, got %d", callCount)
+	}
+
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 4 {
+		t.Fatalf("expected 4 merged items, got %d: %#v", len(list), list)
+	}
+	if _, exists := data["pagination"]; exists {
+		t.Errorf("pagination wrapper should be removed after merge")
+	}
+	gotTotal := toInt64(data["total"])
+	if gotTotal != 4 {
+		t.Errorf("expected total=4 at top level, got %v", data["total"])
+	}
+
+	meta := state.Result.Metadata
+	if meta["auto_paginated"] != true {
+		t.Errorf("expected auto_paginated=true, got %v", meta["auto_paginated"])
+	}
+	if meta["pages_merged"] != 2 {
+		t.Errorf("expected pages_merged=2, got %v", meta["pages_merged"])
+	}
+}
+
+// mergePayloads: arrays concatenate, maps shallow-merge, scalars overwrite.
+func TestMergePayloads(t *testing.T) {
+	base := map[string]any{
+		"list":     []any{1, 2},
+		"name":     "base",
+		"metadata": map[string]any{"a": "1", "b": "2"},
+	}
+	next := map[string]any{
+		"list":     []any{3, 4},
+		"name":     "next",
+		"metadata": map[string]any{"b": "3", "c": "4"},
+	}
+	merged := mergePayloads(base, next)
+
+	list, _ := merged["list"].([]any)
+	if len(list) != 4 || list[0] != 1 || list[3] != 4 {
+		t.Errorf("list = %#v", list)
+	}
+	if merged["name"] != "next" {
+		t.Errorf("name should be overwritten to 'next', got %v", merged["name"])
+	}
+	meta, _ := merged["metadata"].(map[string]any)
+	if meta["a"] != "1" || meta["b"] != "3" || meta["c"] != "4" {
+		t.Errorf("metadata not merged correctly: %#v", meta)
+	}
+}
+
+// page_token-based pagination where the backend keeps returning a non-empty
+// token but every page is empty. The step must stop after maxEmptyPageStreak
+// consecutive empty pages instead of looping to the 200-page cap.
+func TestAutoPaginateStep_PageTokenStopsOnEmptyStreak(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		// Every follow-up page returns an empty list but a non-empty token.
+		payload := map[string]any{
+			"list":            []any{},
+			"next_page_token": "stuck-token",
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "search_by_mql"},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list":            []any{"item1"},
+				"next_page_token": "token-page-2",
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.host":       "ignored.example.com",
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	// Should stop after exactly maxEmptyPageStreak empty follow-up pages.
+	if callCount != maxEmptyPageStreak {
+		t.Errorf("expected %d follow-up calls (empty streak), got %d", maxEmptyPageStreak, callCount)
+	}
+
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 1 {
+		t.Errorf("expected original 1 item (no new items merged), got %d: %#v", len(list), list)
+	}
+	// The stuck token must be dropped so the caller isn't pointed at a dead continuation.
+	if _, exists := data["next_page_token"]; exists {
+		t.Errorf("next_page_token should be deleted after empty-streak stop")
+	}
+
+	meta := state.Result.Metadata
+	if meta["auto_paginated"] != true {
+		t.Errorf("expected auto_paginated=true, got %v", meta["auto_paginated"])
+	}
+	if _, truncated := meta["truncated"]; truncated {
+		t.Errorf("should not be marked truncated on empty-streak stop (no valid continuation)")
+	}
+}
+
+// page_num-based pagination where the backend keeps returning has_more=true
+// but every follow-up page is empty. The step must stop after
+// maxEmptyPageStreak consecutive empty pages.
+func TestAutoPaginateStep_PageNumStopsOnEmptyStreak(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		// Every follow-up page returns an empty list but has_more=true.
+		payload := map[string]any{
+			"list": []any{},
+			"pagination": map[string]any{
+				"has_more": true,
+				"total":    float64(100), // inflates total so the total-check doesn't break early
+			},
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				HandlerRef: "list_todo",
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					"mcp_param_types": `{"page-num":"integer"}`,
+				}},
+			},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list": []any{"a"},
+				"pagination": map[string]any{
+					"has_more": true,
+					"total":    float64(100),
+				},
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.host":       "ignored.example.com",
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	if callCount != maxEmptyPageStreak {
+		t.Errorf("expected %d follow-up calls (empty streak), got %d", maxEmptyPageStreak, callCount)
+	}
+
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 1 {
+		t.Errorf("expected original 1 item (no new items merged), got %d: %#v", len(list), list)
+	}
+	meta := state.Result.Metadata
+	if meta["stopped_reason"] != "consecutive_empty_pages" {
+		t.Errorf("expected stopped_reason=consecutive_empty_pages, got %v", meta["stopped_reason"])
+	}
+}
+
+// --- Additional AutoPaginateStep coverage ---
+
+// First page already has no pagination signals (no next_page_token, no
+// pagination.has_more). AutoPaginateStep should be a complete no-op — no
+// follow-up calls, no metadata enrichment. This is the most common path
+// (single-page responses) and must short-circuit cleanly.
+func TestAutoPaginateStep_NoOpWhenFirstPageHasNoSignals(t *testing.T) {
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "get_workitem_brief"},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list":            []any{"only-item"},
+				"next_page_token": "", // explicitly empty
+			},
+			Metadata: map[string]any{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 1 || list[0] != "only-item" {
+		t.Errorf("data should be unchanged, got %#v", data)
+	}
+	if _, hasMeta := state.Result.Metadata["auto_paginated"]; hasMeta {
+		t.Errorf("should not set auto_paginated when no pagination signals")
+	}
+}
+
+// --dry-run must prevent AutoPaginateStep from executing. In dry-run mode,
+// McpExecutorStep leaves state.Result as nil, so AutoPaginateStep should
+// short-circuit on the nil check and never make follow-up calls.
+func TestAutoPaginateStep_DryRunDoesNotExecute(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, map[string]any{
+			"list":            []any{"should-not-happen"},
+			"next_page_token": "token-page-2",
+		}))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "search_by_mql"},
+			Flags: map[string]any{"auto-paginate": true, "dry-run": true},
+		},
+		// In dry-run, McpExecutorStep returns early with state.Result == nil.
+		Result: nil,
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 0 {
+		t.Errorf("dry-run should not make any follow-up calls, got %d", callCount)
+	}
+}
+
+// When the follow-up CallTool returns an error, AutoPaginateStep must
+// propagate it to the caller rather than silently swallowing it.
+func TestAutoPaginateStep_PageTokenPropagatesCallError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"error": map[string]any{
+				"code":    -32603,
+				"message": "internal server error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "search_by_mql"},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list":            []any{"item1"},
+				"next_page_token": "token-page-2",
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	err := step.Execute(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected error from failed follow-up call, got nil")
+	}
+}
+
+// When a follow-up page returns a non-map response (e.g. a bare array or
+// string), AutoPaginateStep must stop gracefully without panicking.
+func TestAutoPaginateStep_PageTokenStopsOnNonMapResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return a bare array instead of the expected map[string]any.
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, []any{"unexpected", "shape"}))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "search_by_mql"},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list":            []any{"item1", "item2"},
+				"next_page_token": "token-page-2",
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should keep the original first-page data without merging the bad page.
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 2 {
+		t.Errorf("expected 2 items (original only), got %d: %#v", len(list), list)
+	}
+}
+
+// When the result data itself is not a map (e.g. a bare array or scalar),
+// AutoPaginateStep must be a no-op rather than panicking on a type assertion.
+func TestAutoPaginateStep_NoOpOnNonMapResult(t *testing.T) {
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:  &registry.CommandNode{HandlerRef: "search_by_mql"},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data:     []any{"bare", "array"},
+			Metadata: map[string]any{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	arr, ok := state.Result.Data.([]any)
+	if !ok || len(arr) != 2 {
+		t.Errorf("data should be unchanged bare array, got %#v", state.Result.Data)
+	}
+}
+
+// When a sugar command has a ResultTransform, follow-up pages must also have
+// the transform applied so merged data has a consistent shape. Without this,
+// the first page is transformed but subsequent pages are raw, leading to
+// mismatched field names in the merged list.
+func TestAutoPaginateStep_TokenAppliesTransformToFollowUpPages(t *testing.T) {
+	// Register a temporary transform for "testgroup/transformcmd" that
+	// renames "raw_name" to "name" — simulating a sugar command transform.
+	original := sugarResultTransforms["testgroup/transformcmd"]
+	defer func() {
+		if original != nil {
+			sugarResultTransforms["testgroup/transformcmd"] = original
+		} else {
+			delete(sugarResultTransforms, "testgroup/transformcmd")
+		}
+	}()
+	sugarResultTransforms["testgroup/transformcmd"] = func(data any) any {
+		m, ok := data.(map[string]any)
+		if !ok {
+			return data
+		}
+		if list, ok := m["list"].([]any); ok {
+			for i, item := range list {
+				if itemMap, ok := item.(map[string]any); ok {
+					if rawName, exists := itemMap["raw_name"]; exists {
+						itemMap["name"] = rawName
+						delete(itemMap, "raw_name")
+					}
+					list[i] = itemMap
+				}
+			}
+			m["list"] = list
+		}
+		return m
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Follow-up page returns items with "raw_name" (pre-transform shape).
+		payload := map[string]any{
+			"list": []any{
+				map[string]any{"raw_name": "item3-transformed"},
+			},
+			"next_page_token": "",
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	// First page data is already in post-transform shape (has "name", not "raw_name").
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node:     &registry.CommandNode{HandlerRef: "search_by_mql"},
+			FullPath: []string{"testgroup", "transformcmd"},
+			Flags:    map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list": []any{
+					map[string]any{"name": "item1-transformed"},
+					map[string]any{"name": "item2-transformed"},
+				},
+				"next_page_token": "token-page-2",
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 3 {
+		t.Fatalf("expected 3 merged items, got %d: %#v", len(list), list)
+	}
+	// Every item must have "name" (post-transform), not "raw_name".
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("item %d is not a map: %#v", i, item)
+		}
+		if _, hasRaw := m["raw_name"]; hasRaw {
+			t.Errorf("item %d still has raw_name (transform not applied): %#v", i, m)
+		}
+		if m["name"] == nil {
+			t.Errorf("item %d missing 'name' field: %#v", i, m)
+		}
+	}
+}
+
+// page_num-based pagination with a ResultTransform: the transform must not
+// break pagination signal extraction. The transform runs on resp.Data before
+// the code reads pageData["pagination"]["has_more"], so if a transform were to
+// rename or delete the "pagination" field, the loop would terminate early.
+// This test confirms that a transform touching only list items (not
+// pagination) preserves the has_more signal across pages.
+func TestAutoPaginateStep_PageNumAppliesTransformWithoutBreakingPagination(t *testing.T) {
+	// Register a temporary transform for "testgroup/pagetransform" that
+	// renames "raw_name" to "name" in list items but leaves pagination intact.
+	original := sugarResultTransforms["testgroup/pagetransform"]
+	defer func() {
+		if original != nil {
+			sugarResultTransforms["testgroup/pagetransform"] = original
+		} else {
+			delete(sugarResultTransforms, "testgroup/pagetransform")
+		}
+	}()
+	sugarResultTransforms["testgroup/pagetransform"] = func(data any) any {
+		m, ok := data.(map[string]any)
+		if !ok {
+			return data
+		}
+		if list, ok := m["list"].([]any); ok {
+			for i, item := range list {
+				if itemMap, ok := item.(map[string]any); ok {
+					if rawName, exists := itemMap["raw_name"]; exists {
+						itemMap["name"] = rawName
+						delete(itemMap, "raw_name")
+					}
+					list[i] = itemMap
+				}
+			}
+			m["list"] = list
+		}
+		return m
+	}
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body struct {
+			Params struct {
+				Arguments struct {
+					PageNum int `json:"page_num"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		var payload map[string]any
+		if body.Params.Arguments.PageNum <= 1 {
+			// First page (called by McpExecutorStep, not by auto-paginate).
+			payload = map[string]any{
+				"list": []any{
+					map[string]any{"raw_name": "a-raw"},
+					map[string]any{"raw_name": "b-raw"},
+				},
+				"pagination": map[string]any{
+					"has_more": true,
+					"total":    float64(4),
+				},
+			}
+		} else {
+			// Second page (follow-up by auto-paginate).
+			payload = map[string]any{
+				"list": []any{
+					map[string]any{"raw_name": "c-raw"},
+					map[string]any{"raw_name": "d-raw"},
+				},
+				"pagination": map[string]any{
+					"has_more": false,
+					"total":    float64(4),
+				},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	// First page data is already in post-transform shape (has "name").
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				HandlerRef: "list_todo",
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					"mcp_param_types": `{"page-num":"integer"}`,
+				}},
+			},
+			FullPath: []string{"testgroup", "pagetransform"},
+			Flags:    map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list": []any{
+					map[string]any{"name": "a-transformed"},
+					map[string]any{"name": "b-transformed"},
+				},
+				"pagination": map[string]any{
+					"has_more": true,
+					"total":    float64(4),
+				},
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	// Should have made exactly 1 follow-up call (page 2).
+	if callCount != 1 {
+		t.Errorf("expected 1 follow-up call, got %d", callCount)
+	}
+
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 4 {
+		t.Fatalf("expected 4 merged items, got %d: %#v", len(list), list)
+	}
+	// Every item must have "name" (post-transform), not "raw_name".
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("item %d is not a map: %#v", i, item)
+		}
+		if _, hasRaw := m["raw_name"]; hasRaw {
+			t.Errorf("item %d still has raw_name (transform not applied): %#v", i, m)
+		}
+		if m["name"] == nil {
+			t.Errorf("item %d missing 'name' field: %#v", i, m)
+		}
+	}
+}
+
+// When the command declares "next_page_token" (not "page_token") in its
+// mcp_param_types, the follow-up call must send the cursor under
+// "next_page_token" — the parameter name the backend actually accepts.
+// Sending "page_token" instead would be silently ignored, causing the backend
+// to return page 1 repeatedly and producing 200 pages of duplicate data.
+func TestAutoPaginateStep_TokenUsesNextPageTokenParamName(t *testing.T) {
+	callCount := 0
+	var receivedParamName string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body struct {
+			Params struct {
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		// Capture which token parameter name the follow-up request used.
+		if callCount == 1 {
+			if _, ok := body.Params.Arguments["next_page_token"]; ok {
+				receivedParamName = "next_page_token"
+			} else if _, ok := body.Params.Arguments["page_token"]; ok {
+				receivedParamName = "page_token"
+			}
+		}
+
+		payload := map[string]any{
+			"list":            []any{"item-next"},
+			"next_page_token": "",
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				HandlerRef: "get_workitem_op_records",
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					// Command declares next_page_token, NOT page_token.
+					"mcp_param_types": `{"next-page-token":"string"}`,
+				}},
+			},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list":            []any{"item-first"},
+				"next_page_token": "cursor-page-2",
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Fatalf("expected 1 follow-up call, got %d", callCount)
+	}
+	if receivedParamName != "next_page_token" {
+		t.Errorf("expected follow-up to send next_page_token, got %q", receivedParamName)
+	}
+}
+
+// When the command does NOT declare page_num in mcp_param_types, the
+// page_num-based pagination path must not activate — even if the response
+// contains pagination.has_more=true. This prevents blindly sending page_num
+// to commands that use offset/cursor/group-pagination-list instead.
+func TestAutoPaginateStep_PageNumSkippedWhenParamNotDeclared(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, map[string]any{
+			"list": []any{"should-not-reach"},
+			"pagination": map[string]any{
+				"has_more": true,
+				"total":    float64(100),
+			},
+		}))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				HandlerRef: "list_offset_based",
+				// Command declares offset, NOT page_num.
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					"mcp_param_types": `{"offset":"integer","limit":"integer"}`,
+				}},
+			},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list": []any{"a", "b"},
+				"pagination": map[string]any{
+					"has_more": true,
+					"total":    float64(100),
+				},
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("auto-paginate step failed: %v", err)
+	}
+
+	// No follow-up calls — page_num not declared, token path not triggered.
+	if callCount != 0 {
+		t.Errorf("expected 0 follow-up calls (page_num not declared), got %d", callCount)
+	}
+	// Data should be unchanged.
+	data := state.Result.Data.(map[string]any)
+	list, _ := data["list"].([]any)
+	if len(list) != 2 {
+		t.Errorf("expected original 2 items, got %d: %#v", len(list), list)
+	}
+	// Should NOT set auto_paginated metadata.
+	if _, hasMeta := state.Result.Metadata["auto_paginated"]; hasMeta {
+		t.Errorf("should not set auto_paginated when page_num not declared")
+	}
+}
+
+// When the 200-page cap is hit and the command declares next_page_token
+// (not page_token), the truncation stderr hint must tell the user to re-run
+// with --next-page-token (the actual CLI flag), not --page-token. Otherwise
+// the generated continuation command references a flag that does not exist
+// for this command.
+func TestAutoPaginateStep_TokenTruncationHintUsesCorrectFlagName(t *testing.T) {
+	// Server that always returns a non-empty next_page_token so we hit the
+	// 200-page cap. Each page returns one unique item so the empty-page guard
+	// never triggers.
+	page := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, map[string]any{
+			"list":            []any{fmt.Sprintf("item-%d", page)},
+			"next_page_token": fmt.Sprintf("token-%d", page+1),
+		}))
+	}))
+	defer server.Close()
+
+	step := &AutoPaginateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				HandlerRef: "get_workitem_op_records",
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					"mcp_param_types": `{"next-page-token":"string"}`,
+				}},
+			},
+			Flags: map[string]any{"auto-paginate": true},
+		},
+		Result: &executor.RawResult{
+			Data: map[string]any{
+				"list":            []any{"item-0"},
+				"next_page_token": "token-1",
+			},
+			Metadata: map[string]any{},
+		},
+		OutputConfig: map[string]any{
+			"mcp.server_url": server.URL,
+			"mcp.token":      "tok",
+			"mcp.headers":    map[string]string{},
+		},
+	}
+	// Capture stderr to verify the hint uses the correct flag name.
+	oldStderr := os.Stderr
+	rPipe, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+
+	executeErr := step.Execute(context.Background(), state)
+
+	_ = wPipe.Close()
+	os.Stderr = oldStderr
+	stderrBytes, _ := io.ReadAll(rPipe)
+	_ = rPipe.Close()
+	stderrOutput := string(stderrBytes)
+
+	if executeErr != nil {
+		t.Fatalf("auto-paginate step failed: %v", executeErr)
+	}
+
+	meta := state.Result.Metadata
+	if meta["truncated"] != true {
+		t.Fatalf("expected truncated=true, got %v", meta["truncated"])
+	}
+	if meta["pages_merged"].(int) != maxAutoPaginatePages {
+		t.Errorf("expected pages_merged=%d, got %v", maxAutoPaginatePages, meta["pages_merged"])
+	}
+	// The continuation token must be present.
+	if meta["next_page_token"] == nil || meta["next_page_token"] == "" {
+		t.Errorf("expected non-empty next_page_token in meta, got %v", meta["next_page_token"])
+	}
+
+	// The stderr hint must reference --next-page-token (the actual CLI flag
+	// for this command), not --page-token. Without this assertion the test
+	// would pass even if the hint regressed to the hardcoded wrong flag.
+	if !strings.Contains(stderrOutput, "--next-page-token") {
+		t.Errorf("stderr hint should contain --next-page-token, got:\n%s", stderrOutput)
+	}
+	if strings.Contains(stderrOutput, "--page-token ") {
+		t.Errorf("stderr hint should NOT contain --page-token (wrong flag for this command), got:\n%s", stderrOutput)
 	}
 }

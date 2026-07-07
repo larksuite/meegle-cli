@@ -220,52 +220,7 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 		state.Values = pipeline.BuildInputValues(state.Parsed)
 	}
 
-	// Read original MCP type info (written by registry.go buildCommandTree into Meta.Tags)
-	var paramTypes map[string]string // kebab-name -> MCP type
-	var paramItems map[string]string // kebab-name -> items.type
-	if state.Parsed.Node != nil && state.Parsed.Node.Meta.Tags != nil {
-		if raw, ok := state.Parsed.Node.Meta.Tags["mcp_param_types"]; ok {
-			_ = json.Unmarshal([]byte(raw), &paramTypes)
-		}
-		if raw, ok := state.Parsed.Node.Meta.Tags["mcp_param_items"]; ok {
-			_ = json.Unmarshal([]byte(raw), &paramItems)
-		}
-	}
-
-	// Only send parameters explicitly provided by the user (skip cobra defaults like empty string/false/0)
-	// master's makeRunFunc also only collects Changed flags
-	explicitKeys := make(map[string]bool)
-	for k := range state.Parsed.ExplicitFlags {
-		if isMeegleRuntimeFlag(k) {
-			continue
-		}
-		explicitKeys[k] = true
-	}
-
-	// Type conversion + kebab -> snake_case
-	snakeParams := make(map[string]any, len(state.Values))
-	for k, v := range state.Values {
-		if !explicitKeys[k] {
-			continue // Skip parameters not explicitly provided by the user (cobra defaults)
-		}
-		origType := paramTypes[k] // Look up type using kebab key
-		snakeKey := strings.ReplaceAll(k, "-", "_")
-		snakeParams[snakeKey] = coerceValue(v, origType, paramItems[k])
-	}
-
-	// Inject mcp_fixed_params (user-explicit parameters take priority)
-	if state.Parsed.Node != nil && state.Parsed.Node.Meta.Tags != nil {
-		if raw, ok := state.Parsed.Node.Meta.Tags["mcp_fixed_params"]; ok {
-			var fixed map[string]any
-			if json.Unmarshal([]byte(raw), &fixed) == nil {
-				for k, v := range fixed {
-					if _, exists := snakeParams[k]; !exists {
-						snakeParams[k] = v
-					}
-				}
-			}
-		}
-	}
+	snakeParams := buildSnakeParams(state)
 
 	unknownParams := findUnknownParams(state, snakeParams)
 
@@ -456,6 +411,587 @@ func meegleOutputProcessor() *frameworkoutput.Processor {
 }
 
 // ---------------------------------------------------------------------------
+// buildSnakeParams — shared parameter construction for McpExecutorStep and AutoPaginateStep
+// ---------------------------------------------------------------------------
+
+// buildSnakeParams builds the snake_case parameter map from pipeline state,
+// performing kebab-to-snake conversion, type coercion, and mcp_fixed_params injection.
+// Extracted from McpExecutorStep so AutoPaginateStep can reuse the same logic
+// when constructing follow-up requests with page_token / page_num overrides.
+func buildSnakeParams(state *pipeline.PipelineContext) map[string]any {
+	if state == nil || state.Parsed == nil || state.Parsed.Node == nil {
+		return map[string]any{}
+	}
+	if state.Values == nil {
+		state.Values = pipeline.BuildInputValues(state.Parsed)
+	}
+
+	var paramTypes map[string]string // kebab-name -> MCP type
+	var paramItems map[string]string // kebab-name -> items.type
+	if state.Parsed.Node.Meta.Tags != nil {
+		if raw, ok := state.Parsed.Node.Meta.Tags["mcp_param_types"]; ok {
+			_ = json.Unmarshal([]byte(raw), &paramTypes)
+		}
+		if raw, ok := state.Parsed.Node.Meta.Tags["mcp_param_items"]; ok {
+			_ = json.Unmarshal([]byte(raw), &paramItems)
+		}
+	}
+
+	explicitKeys := make(map[string]bool)
+	for k := range state.Parsed.ExplicitFlags {
+		if isMeegleRuntimeFlag(k) {
+			continue
+		}
+		explicitKeys[k] = true
+	}
+
+	snakeParams := make(map[string]any, len(state.Values))
+	for k, v := range state.Values {
+		if !explicitKeys[k] {
+			continue
+		}
+		origType := paramTypes[k]
+		snakeKey := strings.ReplaceAll(k, "-", "_")
+		snakeParams[snakeKey] = coerceValue(v, origType, paramItems[k])
+	}
+
+	if state.Parsed.Node.Meta.Tags != nil {
+		if raw, ok := state.Parsed.Node.Meta.Tags["mcp_fixed_params"]; ok {
+			var fixed map[string]any
+			if json.Unmarshal([]byte(raw), &fixed) == nil {
+				for k, v := range fixed {
+					if _, exists := snakeParams[k]; !exists {
+						snakeParams[k] = v
+					}
+				}
+			}
+		}
+	}
+
+	return snakeParams
+}
+
+// ---------------------------------------------------------------------------
+// AutoPaginateStep — fetches and merges all pages when --auto-paginate is set
+// ---------------------------------------------------------------------------
+
+const maxAutoPaginatePages = 200
+
+// maxEmptyPageStreak is the number of consecutive pages that add zero new
+// items before auto-paginate gives up, even if the backend keeps returning a
+// non-empty page_token. Protects against a stuck cursor burning the budget.
+//
+// Value rationale: 3 strikes a balance — 1 would be too aggressive (a single
+// legitimately empty page from a sparse filter would abort early), while 5+
+// wastes budget on a genuinely stuck cursor. At 3, we tolerate one transient
+// empty page (streak resets on the next non-empty page) but still stop quickly
+// when no progress is being made. The budget saved by stopping early (up to
+// ~197 follow-up calls) far outweighs the cost of 2 extra empty-page fetches.
+const maxEmptyPageStreak = 3
+
+type AutoPaginateStep struct {
+	// CommandsFunc returns the mapped commands for error message sanitization.
+	// Injected by the pipeline factory to avoid package-level mutable state.
+	// Same pattern as McpExecutorStep — used to sanitize tool names in
+	// follow-up CallTool errors so users see clean command paths, not raw
+	// MCP tool names like "feishu-project_workitem_data_skill.get_workitem_op_records".
+	CommandsFunc func() []types.MappedCommand
+}
+
+func (s *AutoPaginateStep) Name() string { return "auto_paginate" }
+
+func (s *AutoPaginateStep) Execute(ctx context.Context, state *pipeline.PipelineContext) error {
+	if state == nil || state.Parsed == nil || state.Result == nil {
+		return nil
+	}
+	// Only active when --auto-paginate is explicitly set.
+	if !isAutoPaginateFlag(state.Parsed) {
+		return nil
+	}
+	// Batch and attachment shortcut commands have their own execution paths.
+	if state.Parsed.Node != nil {
+		if state.Parsed.Node.Meta.Tags[TagMcpBatch] == "1" {
+			return nil
+		}
+		if state.Parsed.Node.Meta.Tags[TagAttachmentShortcut] != "" {
+			return nil
+		}
+	}
+	// The result must be a map (the typical MCP tool response shape).
+	data, ok := state.Result.Data.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	toolName := state.Parsed.Node.HandlerRef
+	originalParams := buildSnakeParams(state)
+	client := newMcpClientFromState(state)
+
+	// Try page_token-based pagination first, then page_num-based.
+	merged, meta, err := paginateByToken(ctx, client, toolName, originalParams, data, state.Parsed, s, state)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		// page_token path did not trigger; try page_num-based pagination.
+		merged, meta, err = paginateByPageNum(ctx, client, toolName, originalParams, data, state.Parsed, s, state)
+		if err != nil {
+			return err
+		}
+	}
+	if meta == nil {
+		return nil // no pagination signals found
+	}
+
+	// Replace result data with merged payload.
+	state.Result.Data = merged
+
+	// Enrich metadata.
+	if state.Result.Metadata == nil {
+		state.Result.Metadata = map[string]any{}
+	}
+	for k, v := range meta {
+		state.Result.Metadata[k] = v
+	}
+	return nil
+}
+
+func isAutoPaginateFlag(parsed *router.ParsedCommand) bool {
+	if parsed == nil {
+		return false
+	}
+	v, _ := parsed.Flags["auto-paginate"].(bool)
+	return v
+}
+
+// paginateByToken handles next_page_token-based pagination.
+// If the payload contains a non-empty next_page_token, it loops: calls the
+// MCP tool with the token, merges the list arrays, and repeats until the
+// token is empty or the 200-page limit is reached.
+//
+// The token parameter name sent to the backend is resolved from the command's
+// mcp_param_types metadata: if the tool declares "next_page_token" (the
+// catalog convention, e.g. get-op-records), that key is used; otherwise it
+// falls back to "page_token". This avoids sending a wrong cursor parameter
+// name that the backend would silently ignore, causing it to return page 1
+// repeatedly and producing 200 pages of duplicate data (the empty-page guard
+// does not trigger because the array length keeps growing).
+//
+// Returns (mergedPayload, paginationMeta, error). If the payload has no
+// next_page_token, returns (originalData, nil, nil) so the caller can try
+// page_num-based pagination instead.
+func paginateByToken(ctx context.Context, client *mcpclient.Client, toolName string, baseParams map[string]any, firstData map[string]any, parsed *router.ParsedCommand, step *AutoPaginateStep, state *pipeline.PipelineContext) (map[string]any, map[string]any, error) {
+	firstToken := getString(firstData, "next_page_token")
+	if firstToken == "" {
+		return firstData, nil, nil
+	}
+
+	tokenParam := resolveTokenParamName(parsed)
+	transform := LookupResultTransform(parsed.FullPath)
+
+	merged := shallowCopyMap(firstData)
+	pageCount := 1
+	currentToken := firstToken
+	var lastToken string
+	emptyStreak := 0 // consecutive pages that added zero new items
+	stoppedReason := ""
+
+	for currentToken != "" {
+		if pageCount >= maxAutoPaginatePages {
+			lastToken = currentToken
+			break
+		}
+		pageCount++
+
+		params := withParam(baseParams, tokenParam, currentToken)
+		resp, err := client.CallTool(ctx, toolName, params)
+		if err != nil {
+			return nil, nil, step.sanitizeError(err, state, toolName)
+		}
+
+		rawData := resp.Data
+		if transform != nil {
+			rawData = transform(rawData)
+		}
+		pageData, ok := rawData.(map[string]any)
+		if !ok {
+			break
+		}
+		beforeLen := getListLength(merged)
+		merged = mergePayloads(merged, pageData)
+		afterLen := getListLength(merged)
+		currentToken = getString(pageData, "next_page_token")
+
+		// Guard against backends that keep returning a non-empty token while
+		// yielding no new items: stop after a few consecutive empty pages so
+		// we don't burn through the full 200-page budget on a stuck cursor.
+		if afterLen == beforeLen {
+			emptyStreak++
+			if emptyStreak >= maxEmptyPageStreak {
+				stoppedReason = "consecutive_empty_pages"
+				break
+			}
+		} else {
+			emptyStreak = 0
+		}
+	}
+
+	delete(merged, "next_page_token")
+
+	meta := map[string]any{
+		"auto_paginated": true,
+		"pages_merged":   pageCount,
+		"total_items":    getListLength(merged),
+	}
+	if lastToken != "" {
+		meta["truncated"] = true
+		meta["next_page_token"] = lastToken
+		fmt.Fprintf(os.Stderr,
+			"[meegle] auto-paginate reached %d-page limit; merged %v items across %d pages.\nNext page token: %s. Re-run with --%s %s to continue.\n",
+			maxAutoPaginatePages, meta["total_items"], pageCount, lastToken, strings.ReplaceAll(tokenParam, "_", "-"), lastToken)
+	}
+	if stoppedReason != "" {
+		meta["stopped_reason"] = stoppedReason
+		fmt.Fprintf(os.Stderr,
+			"[meegle] auto-paginate stopped early after %d consecutive empty pages; merged %v items across %d pages.\nIf you confirmed there is still data, check the backend pagination logic or re-run with a smaller page size.\n",
+			maxEmptyPageStreak, meta["total_items"], pageCount)
+	}
+
+	return merged, meta, nil
+}
+
+// paginateByPageNum handles page_num + pagination.has_more based pagination.
+// If the payload contains a pagination.has_more=true, it loops: increments
+// page_num, calls the MCP tool, merges the list arrays, and repeats until
+// has_more is false, the merged count reaches total, or the 200-page limit
+// is reached.
+// Returns (mergedPayload, paginationMeta, error). If no page_num pagination
+// signals are found, returns (originalData, nil, nil).
+func paginateByPageNum(ctx context.Context, client *mcpclient.Client, toolName string, baseParams map[string]any, firstData map[string]any, parsed *router.ParsedCommand, step *AutoPaginateStep, state *pipeline.PipelineContext) (map[string]any, map[string]any, error) {
+	pagination, ok := firstData["pagination"].(map[string]any)
+	if !ok {
+		return firstData, nil, nil
+	}
+	hasMore, _ := pagination["has_more"].(bool)
+	if !hasMore {
+		return firstData, nil, nil
+	}
+	// Only activate page_num auto-pagination if the tool actually declares a
+	// page_num parameter in its mcp_param_types metadata. Some commands use
+	// offset/cursor/group-pagination-list instead; blindly sending page_num
+	// to those would either be ignored (backend returns page 1 repeatedly,
+	// producing duplicate data) or rejected as an unknown parameter.
+	if !hasParamInMetadata(parsed, "page_num") {
+		return firstData, nil, nil
+	}
+	// If baseParams already has page_num, use that as the starting page;
+	// otherwise default to 1.
+	startPage := 1
+	if raw, exists := baseParams["page_num"]; exists {
+		if n, ok := toInt(raw); ok {
+			startPage = n
+		}
+	}
+
+	transform := LookupResultTransform(parsed.FullPath)
+
+	merged := shallowCopyMap(firstData)
+	total := toInt64(pagination["total"])
+	if total == 0 {
+		// Try top-level total.
+		total = toInt64(firstData["total"])
+	}
+
+	pageCount := 1
+	currentPage := startPage
+	truncated := false
+	emptyStreak := 0 // consecutive pages that added zero new items
+	stoppedReason := ""
+
+	for {
+		if pageCount >= maxAutoPaginatePages {
+			truncated = true
+			break
+		}
+		if total > 0 && int64(getListLength(merged)) >= total {
+			break
+		}
+		currentPage++
+
+		params := withParam(baseParams, "page_num", currentPage)
+		resp, err := client.CallTool(ctx, toolName, params)
+		if err != nil {
+			return nil, nil, step.sanitizeError(err, state, toolName)
+		}
+
+		rawData := resp.Data
+		if transform != nil {
+			rawData = transform(rawData)
+		}
+		pageData, ok := rawData.(map[string]any)
+		if !ok {
+			break
+		}
+		pageCount++
+
+		// Check pagination signal before the streak guard so that "normal
+		// end" (has_more=false) and "stuck cursor" (empty streak) are
+		// clearly separated — the streak guard only runs when the backend
+		// says there are more pages.
+		hasMore := false
+		if pg, ok := pageData["pagination"].(map[string]any); ok {
+			hasMore, _ = pg["has_more"].(bool)
+		}
+		if !hasMore {
+			merged = mergePayloads(merged, pageData)
+			break
+		}
+
+		beforeLen := getListLength(merged)
+		merged = mergePayloads(merged, pageData)
+		afterLen := getListLength(merged)
+
+		// Guard against backends that keep returning has_more=true while
+		// yielding no new items: stop after a few consecutive empty pages.
+		if afterLen == beforeLen {
+			emptyStreak++
+			if emptyStreak >= maxEmptyPageStreak {
+				stoppedReason = "consecutive_empty_pages"
+				break
+			}
+		} else {
+			emptyStreak = 0
+		}
+	}
+
+	// Flatten: move total to top-level, remove pagination wrapper.
+	if pg, ok := merged["pagination"].(map[string]any); ok {
+		if _, exists := merged["total"]; !exists {
+			if t := toInt64(pg["total"]); t > 0 {
+				merged["total"] = t
+			}
+		}
+		delete(merged, "pagination")
+	}
+
+	meta := map[string]any{
+		"auto_paginated": true,
+		"pages_merged":   pageCount,
+		"total_items":    getListLength(merged),
+	}
+	if truncated {
+		meta["truncated"] = true
+		meta["next_page_num"] = currentPage + 1
+		fmt.Fprintf(os.Stderr,
+			"[meegle] auto-paginate reached %d-page limit; merged %v items across %d pages.\nRe-run with --page-num %d to continue.\n",
+			maxAutoPaginatePages, meta["total_items"], pageCount, currentPage+1)
+	}
+	if stoppedReason != "" {
+		meta["stopped_reason"] = stoppedReason
+		fmt.Fprintf(os.Stderr,
+			"[meegle] auto-paginate stopped early after %d consecutive empty pages; merged %v items across %d pages.\nIf you confirmed there is still data, check the backend pagination logic or re-run with a smaller page size.\n",
+			maxEmptyPageStreak, meta["total_items"], pageCount)
+	}
+
+	return merged, meta, nil
+}
+
+// mergePayloads merges two MCP response payloads.
+// - Array fields are concatenated (e.g. "list").
+// - Map fields are shallow-merged (e.g. "pagination").
+// - Scalar fields: the newer value wins.
+//
+// Note: array concatenation uses append, which is O(n) per merge where n is
+// the current merged array length. Across P pages each with k items this sums
+// to O(P*k * P) = O(P^2 * k). Under the maxAutoPaginatePages=200 cap this is
+// acceptable (200^2 * 50 = 2M element copies). If the page cap is raised
+// significantly, switch to collecting page arrays in a [][]any and flattening
+// once at the end.
+func mergePayloads(base, next map[string]any) map[string]any {
+	result := make(map[string]any, len(base))
+	for k, v := range base {
+		result[k] = v
+	}
+	for k, v := range next {
+		existing, exists := result[k]
+		if !exists {
+			result[k] = v
+			continue
+		}
+		if existingArr, ok := existing.([]any); ok {
+			if nextArr, ok := v.([]any); ok {
+				result[k] = append(existingArr, nextArr...)
+				continue
+			}
+		}
+		if existingMap, ok := existing.(map[string]any); ok {
+			if nextMap, ok := v.(map[string]any); ok {
+				merged := make(map[string]any, len(existingMap)+len(nextMap))
+				for mk, mv := range existingMap {
+					merged[mk] = mv
+				}
+				for mk, mv := range nextMap {
+					merged[mk] = mv
+				}
+				result[k] = merged
+				continue
+			}
+		}
+		result[k] = v
+	}
+	return result
+}
+
+// shallowCopyMap creates a shallow copy of a map[string]any. Only the top-level
+// keys are copied; nested values (arrays, maps) are shared. This is safe for
+// mergePayloads because it always creates new arrays/maps during merge rather
+// than mutating the originals in place.
+func shallowCopyMap(src map[string]any) map[string]any {
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// withParam returns a copy of base with the given key set to value.
+func withParam(base map[string]any, key string, value any) map[string]any {
+	out := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		out[k] = v
+	}
+	out[key] = value
+	return out
+}
+
+// getString returns the string value of key in m, or "" if absent/not a string.
+func getString(m map[string]any, key string) string {
+	v, ok := m[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
+// toInt attempts to convert v to an int.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+// toInt64 attempts to convert v to an int64.
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	default:
+		return 0
+	}
+}
+
+// listFieldPriority is the priority order for detecting the primary list field
+// in a response payload. The first matching key is used; if none match, the
+// first []any value found is used as fallback.
+var listFieldPriority = []string{"list", "items", "data"}
+
+// getListLength returns the length of the primary list field in m. It prefers
+// well-known field names (list, items, data) in priority order to avoid
+// depending on Go's randomized map iteration order. If none of the priority
+// keys exist, falls back to the first []any value found.
+func getListLength(m map[string]any) int {
+	for _, key := range listFieldPriority {
+		if arr, ok := m[key].([]any); ok {
+			return len(arr)
+		}
+	}
+	// Fallback: first []any value found (order non-deterministic but only
+	// affects payloads without any of the priority field names).
+	for _, v := range m {
+		if arr, ok := v.([]any); ok {
+			return len(arr)
+		}
+	}
+	return 0
+}
+
+// hasParamInMetadata reports whether the command declares the given snake_case
+// parameter in its mcp_param_types metadata tag. The metadata keys are kebab-case
+// (e.g. "page-num"), so we convert the input to kebab before looking up.
+func hasParamInMetadata(parsed *router.ParsedCommand, snakeParam string) bool {
+	if parsed == nil || parsed.Node == nil || parsed.Node.Meta.Tags == nil {
+		return false
+	}
+	raw, ok := parsed.Node.Meta.Tags["mcp_param_types"]
+	if !ok {
+		return false
+	}
+	var paramTypes map[string]string // kebab-name -> MCP type
+	if json.Unmarshal([]byte(raw), &paramTypes) != nil {
+		return false
+	}
+	kebab := strings.ReplaceAll(snakeParam, "_", "-")
+	_, exists := paramTypes[kebab]
+	return exists
+}
+
+// resolveTokenParamName returns the snake_case token parameter name that the
+// command declares. It inspects mcp_param_types for known token parameter
+// names (next_page_token, page_token). If the command declares one of them,
+// that name is used; otherwise "page_token" is the fallback. This ensures we
+// send the cursor under the correct parameter name — e.g. get-op-records
+// declares "next_page_token", so we must send next_page_token (not page_token)
+// or the backend silently ignores the cursor and returns page 1 repeatedly.
+func resolveTokenParamName(parsed *router.ParsedCommand) string {
+	if parsed == nil || parsed.Node == nil || parsed.Node.Meta.Tags == nil {
+		return "page_token"
+	}
+	raw, ok := parsed.Node.Meta.Tags["mcp_param_types"]
+	if !ok {
+		return "page_token"
+	}
+	var paramTypes map[string]string // kebab-name -> MCP type
+	if json.Unmarshal([]byte(raw), &paramTypes) != nil {
+		return "page_token"
+	}
+	// Prefer "next_page_token" (the catalog convention) over "page_token".
+	for _, candidate := range []string{"next_page_token", "page_token"} {
+		kebab := strings.ReplaceAll(candidate, "_", "-")
+		if _, exists := paramTypes[kebab]; exists {
+			return candidate
+		}
+	}
+	return "page_token"
+}
+
+// sanitizeError applies the same error enrichment as McpExecutorStep:
+// sanitizeToolNames (clean MCP tool names → user-facing command paths) and
+// attachMyWorkTodoSuggestion (troubleshooting hint for mywork todo). Shared
+// so that follow-up CallTool errors during auto-paginate get identical
+// treatment as the first-page error.
+func (s *AutoPaginateStep) sanitizeError(err error, state *pipeline.PipelineContext, toolName string) error {
+	if err == nil {
+		return nil
+	}
+	if me, ok := err.(*meerrors.MeegleError); ok && s.CommandsFunc != nil {
+		me.Message = sanitizeToolNames(me.Message, s.CommandsFunc())
+	}
+	attachMyWorkTodoSuggestion(err, state, toolName)
+	return err
+}
+
+// ---------------------------------------------------------------------------
 // newPipelineFactory — Assembles the step chain for the meegle product
 // ---------------------------------------------------------------------------
 
@@ -466,6 +1002,7 @@ func newPipelineFactory(setup *DynamicRegistrySetup) cliapp.PipelineFactory {
 			&MeegleValidateStep{},
 			&SessionStep{},
 			&McpExecutorStep{CommandsFunc: setup.MappedCommands},
+			&AutoPaginateStep{CommandsFunc: setup.MappedCommands},
 			&BatchExecutorStep{CommandsFunc: setup.MappedCommands},
 			&AttachmentShortcutStep{},
 			&pipeline.OutputStep{Processor: meegleOutputProcessor()},
