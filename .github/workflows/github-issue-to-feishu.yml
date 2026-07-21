@@ -1,0 +1,45 @@
+name: GitHub Issue to Feishu
+
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+      - closed
+      - edited
+      - labeled
+      - unlabeled
+      - assigned
+      - unassigned
+  issue_comment:
+    types:
+      - created
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to send a manual smoke notification for
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  notify:
+    name: Notify Feishu
+    runs-on: ubuntu-latest
+    if: ${{ github.event.issue.pull_request == null || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Send notification
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+          FEISHU_OPENAPI_BASE: ${{ vars.FEISHU_OPENAPI_BASE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MANUAL_ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: node .github/scripts/github-issue-to-feishu.js
