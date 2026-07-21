@@ -74,3 +74,12 @@ func (s *FallbackStore) Clear() error {
 	}
 	return nil
 }
+
+// WithRefreshLock delegates to the file fallback, whose lock path is stable
+// across processes regardless of which native credential backend is active.
+func (s *FallbackStore) WithRefreshLock(fn func() error) error {
+	if locker, ok := s.fallback.(tokenRefreshLocker); ok {
+		return locker.WithRefreshLock(fn)
+	}
+	return fn()
+}

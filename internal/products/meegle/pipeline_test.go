@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
@@ -503,6 +504,87 @@ func TestMcpExecutorStep_CustomAuthHeader_OverridesStaticHeader(t *testing.T) {
 	}
 	if capturedCustom != "live-token" {
 		t.Errorf("expected live-token (from tokenFunc), got %q", capturedCustom)
+	}
+}
+
+func TestMcpExecutorStep_RefreshRetryUsesFreshStoredToken(t *testing.T) {
+	store := &memTokenStore{data: &auth.TokenData{
+		AccessToken:  "stale-token",
+		RefreshToken: "refresh-token",
+		ClientID:     "client-id",
+	}}
+
+	var oauthServer *httptest.Server
+	oauthServer = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 "https://issuer.example",
+				"authorization_endpoint": "https://issuer.example/auth",
+				"registration_endpoint":  "https://issuer.example/register",
+				"token_endpoint":         oauthServer.URL + "/token",
+			})
+		case "/token":
+			_, _ = w.Write([]byte(`{"access_token":"fresh-token","refresh_token":"refresh-token","expires_in":3600}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer oauthServer.Close()
+
+	previousClient := http.DefaultClient
+	http.DefaultClient = oauthServer.Client()
+	t.Cleanup(func() { http.DefaultClient = previousClient })
+
+	var seenTokens []string
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		seenTokens = append(seenTokens, token)
+		if token == "stale-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if token != "fresh-token" {
+			t.Errorf("unexpected token %q", token)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			ID int64 `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body.ID,
+			"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}},
+		})
+	}))
+	defer mcpServer.Close()
+
+	tm := auth.NewTokenManager(store, strings.TrimPrefix(oauthServer.URL, "https://"))
+	step := &McpExecutorStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"workitem", "get-brief"},
+			Node:     &registry.CommandNode{HandlerRef: "get_work_item"},
+			Flags:    map[string]any{},
+		},
+		Values: map[string]any{},
+		OutputConfig: map[string]any{
+			"mcp.host":          "ignored.example.com",
+			"mcp.server_url":    mcpServer.URL,
+			"mcp.token":         "stale-token",
+			"mcp.headers":       map[string]string{},
+			"mcp.store":         auth.TokenStore(store),
+			"mcp.token_manager": tm,
+		},
+	}
+
+	if err := step.Execute(context.Background(), state); err != nil {
+		t.Fatalf("executor step failed after refresh: %v", err)
+	}
+	if len(seenTokens) != 2 || seenTokens[0] != "stale-token" || seenTokens[1] != "fresh-token" {
+		t.Fatalf("expected retry with refreshed token, got %v", seenTokens)
 	}
 }
 

@@ -1040,8 +1040,15 @@ func newMcpClientFromState(state *pipeline.PipelineContext) *mcpclient.Client {
 		httpHeaders.Set(k, v)
 	}
 
+	tokenFunc := func() (string, error) { return token, nil }
+	if tm != nil {
+		// Store-backed credentials must be read again for the retry after a
+		// successful refresh; retaining the session snapshot would resend the
+		// rejected token and turn a successful refresh into another 401.
+		tokenFunc = tm.GetToken
+	}
 	opts := []mcpclient.Option{
-		mcpclient.WithToken(func() (string, error) { return token, nil }),
+		mcpclient.WithToken(tokenFunc),
 		mcpclient.WithHeaders(httpHeaders),
 	}
 	if authHeader != "" {
@@ -1050,21 +1057,9 @@ func newMcpClientFromState(state *pipeline.PipelineContext) *mcpclient.Client {
 	if ua, _ := state.OutputConfig["mcp.user_agent"].(string); ua != "" {
 		opts = append(opts, mcpclient.WithUserAgent(ua))
 	}
-	opts = append(opts, mcpclient.WithRefreshFunc(func() error {
-		if tm == nil {
-			return fmt.Errorf("no token manager")
-		}
-		store, _ := state.OutputConfig["mcp.store"].(auth.TokenStore)
-		if store == nil {
-			return fmt.Errorf("no token store")
-		}
-		data, err := store.Load()
-		if err != nil || data == nil {
-			return fmt.Errorf("no token data")
-		}
-		_, err = tm.RefreshToken(data)
-		return err
-	}))
+	if tm != nil {
+		opts = append(opts, mcpclient.WithRefreshFunc(tm.TryRefresh))
+	}
 	return mcpclient.New(baseURL, opts...)
 }
 

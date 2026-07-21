@@ -3,7 +3,10 @@
 
 package auth
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestFileStoreRoundtrip(t *testing.T) {
 	dir := t.TempDir()
@@ -50,5 +53,45 @@ func TestFileStoreLoadMissing(t *testing.T) {
 	}
 	if loaded != nil {
 		t.Error("expected nil for missing file")
+	}
+}
+
+func TestFileStoreRefreshLockSerializesInstances(t *testing.T) {
+	dir := t.TempDir()
+	first := NewFileStore(dir, "shared")
+	second := NewFileStore(dir, "shared")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondEntered := make(chan struct{})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- first.WithRefreshLock(func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- second.WithRefreshLock(func() error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+
+	select {
+	case <-secondEntered:
+		t.Fatal("second store entered while the first held the refresh lock")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
 	}
 }

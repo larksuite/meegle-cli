@@ -100,6 +100,10 @@ func exchangeToken(ctx context.Context, endpoint string, params url.Values, head
 	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
 		return nil, err
 	}
+	if tr.AccessToken == "" {
+		return nil, meerrors.NewServerError("TOKEN_EXCHANGE_FAILED",
+			"Token exchange response did not include access_token")
+	}
 	return &tr, nil
 }
 

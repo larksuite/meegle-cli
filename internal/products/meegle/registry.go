@@ -55,6 +55,7 @@ type DynamicRegistrySetup struct {
 	client                   discovery.ToolLister
 	cache                    *ToolCache
 	tokenManager             *auth.TokenManager
+	activeToken              string
 	source                   IdentitySource
 	globalFlags              []registry.FlagDef
 	commands                 []types.MappedCommand // populated by Setup, read by pipeline steps
@@ -78,6 +79,14 @@ func WithGlobalFlags(flags []registry.FlagDef) RegistryOption {
 func WithTokenManager(tm *auth.TokenManager) RegistryOption {
 	return func(s *DynamicRegistrySetup) {
 		s.tokenManager = tm
+	}
+}
+
+// WithActiveToken records the token used to construct the discovery client.
+// A terminal 401 may clear the store only if this exact token is still there.
+func WithActiveToken(token string) RegistryOption {
+	return func(s *DynamicRegistrySetup) {
+		s.activeToken = token
 	}
 }
 
@@ -189,10 +198,11 @@ func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDe
 			// the user which knob to rotate. SDK callers (SourceUnset with an
 			// injected client) need the 401 to surface so they can react.
 			if meerrors.IsUnauthorized(err) && s.source != SourceUnset {
-				// ClearToken only when we actually own the credential — env
-				// and config tokens must be rotated by the user out-of-band.
+				// Clear only a store token that is still the one rejected by
+				// this process. Another process may already have refreshed it.
+				// Env/config tokens remain caller-owned and are never cleared.
 				if s.source == SourceStore && s.tokenManager != nil {
-					_ = s.tokenManager.ClearToken()
+					_, _ = s.tokenManager.ClearTokenIfCurrent(s.activeToken)
 				}
 				s.authFailed = true
 				return nil, nil

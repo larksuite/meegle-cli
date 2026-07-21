@@ -776,6 +776,11 @@ JSON output example (`auth status --format json`) on a rejected token:
 {"authenticated": false, "host": "meegle.com", "reason": "token rejected by server"}
 ```
 
+For credentials managed by `meegle auth login`, token refresh is serialized
+across CLI processes that share a profile. Invalid refresh responses are
+rejected without overwriting the previous credentials, and a late 401 from an
+older process cannot clear a token that another process has already refreshed.
+
 ## Configuration
 
 ### Config File
