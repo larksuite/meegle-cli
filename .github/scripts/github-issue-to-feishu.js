@@ -65,6 +65,7 @@ async function handleManualDispatch(options) {
   const repo = getRepo();
   const issue = await github.requestJson(`/repos/${repo}/issues/${issueNumber}`);
   const marker = await findFeishuMarker(github, repo, issue.number);
+  const actor = process.env.GITHUB_ACTOR || 'github-actions';
   const activeMarker = marker || await createFeishuRootThread({
     github,
     feishu,
@@ -72,10 +73,18 @@ async function handleManualDispatch(options) {
     repo,
     issue,
     action: 'synced',
-    actor: process.env.GITHUB_ACTOR || 'github-actions',
+    actor,
   });
 
-  const syncedCount = await syncExistingIssueComments({
+  const rootUpdated = await feishu.updateMessageIfChanged(activeMarker.messageId, buildIssueRootMessage({
+    repo,
+    issue,
+    action: 'synced',
+    actor,
+  }));
+  console.log(`${rootUpdated ? 'Updated' : 'Skipped unchanged'} Feishu root thread: ${activeMarker.messageId}`);
+
+  const refreshedCount = await syncExistingIssueComments({
     github,
     feishu,
     repo,
@@ -83,18 +92,7 @@ async function handleManualDispatch(options) {
     marker: activeMarker,
   });
 
-  if (syncedCount > 0) {
-    console.log(`Synced ${syncedCount} existing issue comment(s) for ${repo}#${issue.number}.`);
-    return;
-  }
-
-  const replied = await feishu.replyMessage(activeMarker.messageId, buildIssueUpdateMessage({
-    repo,
-    issue,
-    action: 'synced',
-    actor: process.env.GITHUB_ACTOR || 'github-actions',
-  }));
-  console.log(`Replied to Feishu thread: ${replied.message_id || '(unknown)'}`);
+  console.log(`Refreshed ${refreshedCount} issue comment message(s) for ${repo}#${issue.number}.`);
 }
 
 async function handleIssueEvent(options) {
@@ -119,15 +117,13 @@ async function handleIssueEvent(options) {
     return;
   }
 
-  const replied = await feishu.replyMessage(marker.messageId, buildIssueUpdateMessage({
+  const updated = await feishu.updateMessageIfChanged(marker.messageId, buildIssueRootMessage({
     repo,
     issue,
     action,
     actor,
-    label: payload.label,
-    assignee: payload.assignee,
   }));
-  console.log(`Replied to Feishu thread for ${repo}#${issue.number}: ${replied.message_id || '(unknown)'}`);
+  console.log(`${updated ? 'Updated' : 'Skipped unchanged'} Feishu thread for ${repo}#${issue.number}: ${marker.messageId}`);
 }
 
 async function handleIssueCommentEvent(options) {
@@ -149,19 +145,27 @@ async function handleIssueCommentEvent(options) {
       comment: payload.comment,
       actor,
     }));
-    await markCommentSynced(github, repo, activeMarker, payload.comment && payload.comment.id);
+    await markCommentSynced(github, repo, activeMarker, payload.comment && payload.comment.id, replied.message_id);
     console.log(`Created Feishu thread from comment for ${repo}#${issue.number}: ${sent.message_id || '(unknown)'}`);
     console.log(`Replied with issue comment for ${repo}#${issue.number}: ${replied.message_id || '(unknown)'}`);
     return;
   }
 
-  const replied = await feishu.replyMessage(marker.messageId, buildIssueCommentMessage({
+  const commentMessage = buildIssueCommentMessage({
     repo,
     issue,
     comment: payload.comment,
     actor,
-  }));
-  await markCommentSynced(github, repo, marker, payload.comment && payload.comment.id);
+  });
+  const existingMessageId = getCommentMessageId(marker, payload.comment && payload.comment.id);
+  if (existingMessageId) {
+    const updated = await feishu.updateMessageIfChanged(existingMessageId, commentMessage);
+    console.log(`${updated ? 'Updated' : 'Skipped unchanged'} issue comment ${payload.comment.id} in Feishu: ${existingMessageId}`);
+    return;
+  }
+
+  const replied = await feishu.replyMessage(marker.messageId, commentMessage);
+  await markCommentSynced(github, repo, marker, payload.comment && payload.comment.id, replied.message_id);
   console.log(`Replied with issue comment for ${repo}#${issue.number}: ${replied.message_id || '(unknown)'}`);
 }
 
@@ -191,34 +195,19 @@ function buildIssueRootMessage(options) {
   )));
 }
 
-function buildIssueUpdateMessage(options) {
-  const { repo, issue, action, actor, label, assignee } = options;
-  const parts = [`Issue ${action} by ${actor}`];
-  if (label && label.name) {
-    parts.push(`label=${label.name}`);
-  }
-  if (assignee && assignee.login) {
-    parts.push(`assignee=${assignee.login}`);
-  }
-
-  return buildPost(`[${repo}] #${issue.number} ${action}`, [
-    [{ tag: 'text', text: parts.join(' ') }],
-    [{ tag: 'text', text: issue.title || '-' }],
-    [{ tag: 'a', text: 'Open issue', href: issue.html_url }],
-  ]);
-}
-
 function buildIssueCommentMessage(options) {
   const { repo, issue, comment, actor } = options;
+  const commentLines = markdownToPostLines(comment && comment.body ? comment.body : 'No comment body');
   const content = [
-    [{ tag: 'text', text: `Comment by ${actor}` }],
-    [{ tag: 'text', text: issue.title || '-' }],
+    [
+      { tag: 'text', text: `Comment by ${actor}: ` },
+      ...commentLines[0],
+    ],
+    ...commentLines.slice(1),
     [{ tag: 'a', text: 'Open comment', href: comment && comment.html_url ? comment.html_url : issue.html_url }],
   ];
 
-  return buildPost(`[${repo}] #${issue.number} comment`, content.concat(markdownToPostLines(
-    comment && comment.body ? comment.body : 'No comment body'
-  )));
+  return buildPost(`[${repo}] #${issue.number} comment`, content);
 }
 
 function buildPost(title, content) {
@@ -239,6 +228,7 @@ async function findFeishuMarker(github, repo, issueNumber) {
         commentId: comment.id,
         messageId: marker.messageId,
         syncedCommentIds: Array.isArray(marker.syncedCommentIds) ? marker.syncedCommentIds : [],
+        commentMessages: normalizeCommentMessages(marker.commentMessages),
       };
     }
   }
@@ -254,6 +244,7 @@ async function createFeishuMarker(github, repo, issueNumber, messageId) {
     messageId,
     createdAt: new Date().toISOString(),
     syncedCommentIds: [],
+    commentMessages: {},
   });
 
   const comment = await github.requestJson(`/repos/${repo}/issues/${issueNumber}/comments`, {
@@ -267,6 +258,7 @@ async function createFeishuMarker(github, repo, issueNumber, messageId) {
     commentId: comment.id,
     messageId,
     syncedCommentIds: [],
+    commentMessages: {},
   };
 }
 
@@ -275,6 +267,7 @@ async function updateFeishuMarker(github, repo, marker) {
     messageId: marker.messageId,
     updatedAt: new Date().toISOString(),
     syncedCommentIds: marker.syncedCommentIds || [],
+    commentMessages: normalizeCommentMessages(marker.commentMessages),
   });
 
   await github.requestJson(`/repos/${repo}/issues/comments/${marker.commentId}`, {
@@ -285,16 +278,60 @@ async function updateFeishuMarker(github, repo, marker) {
   });
 }
 
-async function markCommentSynced(github, repo, marker, commentId) {
+async function markCommentSynced(github, repo, marker, commentId, commentMessageId) {
   if (!commentId || !marker || !marker.commentId) {
     return;
   }
-  marker.syncedCommentIds = marker.syncedCommentIds || [];
-  if (marker.syncedCommentIds.map(String).includes(String(commentId))) {
+  const changed = rememberCommentMessage(marker, commentId, commentMessageId);
+  if (!changed) {
     return;
   }
-  marker.syncedCommentIds.push(commentId);
   await updateFeishuMarker(github, repo, marker);
+}
+
+function rememberCommentMessage(marker, commentId, commentMessageId) {
+  if (!commentId) {
+    return false;
+  }
+
+  let changed = false;
+  marker.syncedCommentIds = Array.isArray(marker.syncedCommentIds) ? marker.syncedCommentIds : [];
+  if (!marker.syncedCommentIds.map(String).includes(String(commentId))) {
+    marker.syncedCommentIds.push(commentId);
+    changed = true;
+  }
+
+  if (commentMessageId) {
+    marker.commentMessages = normalizeCommentMessages(marker.commentMessages);
+    if (marker.commentMessages[String(commentId)] !== commentMessageId) {
+      marker.commentMessages[String(commentId)] = commentMessageId;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function getCommentMessageId(marker, commentId) {
+  if (!marker || !commentId) {
+    return '';
+  }
+  const commentMessages = normalizeCommentMessages(marker.commentMessages);
+  return commentMessages[String(commentId)] || '';
+}
+
+function normalizeCommentMessages(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const result = {};
+  for (const [commentId, messageId] of Object.entries(value)) {
+    if (commentId && typeof messageId === 'string' && messageId) {
+      result[String(commentId)] = messageId;
+    }
+  }
+  return result;
 }
 
 async function createFeishuRootThread(options) {
@@ -313,33 +350,42 @@ async function createFeishuRootThread(options) {
 async function syncExistingIssueComments(options) {
   const { github, feishu, repo, issue, marker } = options;
   const comments = await github.listIssueComments(repo, issue.number);
-  const synced = new Set((marker.syncedCommentIds || []).map(String));
-  let syncedCount = 0;
+  let refreshedCount = 0;
+  let markerChanged = false;
 
   for (const comment of comments) {
-    if (!comment || !comment.id || isMarkerBody(comment.body || '') || synced.has(String(comment.id))) {
+    if (!comment || !comment.id || isMarkerBody(comment.body || '')) {
       continue;
     }
 
     const actor = loginOf(comment.user);
-    const replied = await feishu.replyMessage(marker.messageId, buildIssueCommentMessage({
+    const commentMessage = buildIssueCommentMessage({
       repo,
       issue,
       comment,
       actor,
-    }));
-    marker.syncedCommentIds = marker.syncedCommentIds || [];
-    marker.syncedCommentIds.push(comment.id);
-    synced.add(String(comment.id));
-    syncedCount += 1;
+    });
+    const existingMessageId = getCommentMessageId(marker, comment.id);
+    if (existingMessageId) {
+      const updated = await feishu.updateMessageIfChanged(existingMessageId, commentMessage);
+      if (updated) {
+        refreshedCount += 1;
+      }
+      console.log(`${updated ? 'Updated' : 'Skipped unchanged'} issue comment ${comment.id}: ${existingMessageId}`);
+      continue;
+    }
+
+    const replied = await feishu.replyMessage(marker.messageId, commentMessage);
+    markerChanged = rememberCommentMessage(marker, comment.id, replied.message_id) || markerChanged;
+    refreshedCount += 1;
     console.log(`Backfilled issue comment ${comment.id}: ${replied.message_id || '(unknown)'}`);
   }
 
-  if (syncedCount > 0) {
+  if (markerChanged) {
     await updateFeishuMarker(github, repo, marker);
   }
 
-  return syncedCount;
+  return refreshedCount;
 }
 
 function parseMarker(body) {
@@ -431,9 +477,48 @@ function createFeishuClient(config) {
     return data.data || {};
   }
 
+  async function getMessageContent(messageId) {
+    const token = await getTenantAccessToken();
+    const data = await requestJson(`${config.feishuOpenapiBase}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    assertFeishuOK(data, 'get message');
+    return data && data.data && data.data.body ? data.data.body.content : '';
+  }
+
+  async function updateMessage(messageId, message) {
+    const token = await getTenantAccessToken();
+    const data = await requestJson(`${config.feishuOpenapiBase}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: {
+        content: JSON.stringify(message),
+      },
+    });
+    assertFeishuOK(data, 'update message');
+    return data.data || {};
+  }
+
+  async function updateMessageIfChanged(messageId, message) {
+    const currentContent = await getMessageContent(messageId);
+    const nextContent = JSON.stringify(message);
+    if (normalizeMessageContent(currentContent) === normalizeMessageContent(nextContent)) {
+      return false;
+    }
+
+    await updateMessage(messageId, message);
+    return true;
+  }
+
   return {
     sendMessage,
     replyMessage,
+    updateMessageIfChanged,
   };
 }
 
@@ -505,6 +590,30 @@ function assertFeishuOK(data, action) {
     const message = data && (data.msg || data.message) ? data.msg || data.message : 'unknown error';
     throw new Error(`Feishu ${action} failed: ${message}`);
   }
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content !== 'string') {
+    return stableStringify(content);
+  }
+
+  try {
+    return stableStringify(JSON.parse(content));
+  } catch (error) {
+    return content;
+  }
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableStringify(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function readGitHubPayload() {
