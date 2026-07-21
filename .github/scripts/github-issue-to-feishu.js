@@ -9,6 +9,7 @@ const MARKER_PREFIX = '<!-- meegle-cli-feishu-thread:';
 const MARKER_SUFFIX = ' -->';
 const DEFAULT_FEISHU_OPENAPI_BASE = 'https://open.feishu.cn';
 const MAX_TEXT_LENGTH = 1800;
+const MAX_POST_LINES = 20;
 
 main().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
@@ -64,27 +65,36 @@ async function handleManualDispatch(options) {
   const repo = getRepo();
   const issue = await github.requestJson(`/repos/${repo}/issues/${issueNumber}`);
   const marker = await findFeishuMarker(github, repo, issue.number);
-  const message = buildIssueUpdateMessage({
+  const activeMarker = marker || await createFeishuRootThread({
+    github,
+    feishu,
+    config,
     repo,
     issue,
-    action: 'manual smoke test',
+    action: 'synced',
     actor: process.env.GITHUB_ACTOR || 'github-actions',
   });
 
-  if (marker && marker.messageId) {
-    const replied = await feishu.replyMessage(marker.messageId, message);
-    console.log(`Replied to Feishu thread: ${replied.message_id || '(unknown)'}`);
+  const syncedCount = await syncExistingIssueComments({
+    github,
+    feishu,
+    repo,
+    issue,
+    marker: activeMarker,
+  });
+
+  if (syncedCount > 0) {
+    console.log(`Synced ${syncedCount} existing issue comment(s) for ${repo}#${issue.number}.`);
     return;
   }
 
-  const sent = await feishu.sendMessage(config.feishuChatId, buildIssueRootMessage({
+  const replied = await feishu.replyMessage(activeMarker.messageId, buildIssueUpdateMessage({
     repo,
     issue,
-    action: 'manual smoke test',
+    action: 'synced',
     actor: process.env.GITHUB_ACTOR || 'github-actions',
   }));
-  await createFeishuMarker(github, repo, issue.number, sent.message_id);
-  console.log(`Created Feishu thread: ${sent.message_id || '(unknown)'}`);
+  console.log(`Replied to Feishu thread: ${replied.message_id || '(unknown)'}`);
 }
 
 async function handleIssueEvent(options) {
@@ -132,13 +142,14 @@ async function handleIssueCommentEvent(options) {
       action: 'commented',
       actor,
     }));
-    await createFeishuMarker(github, repo, issue.number, sent.message_id);
+    const activeMarker = await createFeishuMarker(github, repo, issue.number, sent.message_id);
     const replied = await feishu.replyMessage(sent.message_id, buildIssueCommentMessage({
       repo,
       issue,
       comment: payload.comment,
       actor,
     }));
+    await markCommentSynced(github, repo, activeMarker, payload.comment && payload.comment.id);
     console.log(`Created Feishu thread from comment for ${repo}#${issue.number}: ${sent.message_id || '(unknown)'}`);
     console.log(`Replied with issue comment for ${repo}#${issue.number}: ${replied.message_id || '(unknown)'}`);
     return;
@@ -150,6 +161,7 @@ async function handleIssueCommentEvent(options) {
     comment: payload.comment,
     actor,
   }));
+  await markCommentSynced(github, repo, marker, payload.comment && payload.comment.id);
   console.log(`Replied with issue comment for ${repo}#${issue.number}: ${replied.message_id || '(unknown)'}`);
 }
 
@@ -168,12 +180,15 @@ function shouldNotifyIssueAction(action) {
 
 function buildIssueRootMessage(options) {
   const { repo, issue, action, actor } = options;
-  return buildPost(`[${repo}] #${issue.number} ${issue.title}`, [
+  const content = [
     [{ tag: 'text', text: `Issue ${action} by ${actor}` }],
     [{ tag: 'text', text: `State: ${issue.state || '-'}` }],
     [{ tag: 'a', text: 'Open issue', href: issue.html_url }],
-    [{ tag: 'text', text: trimText(issue.body || 'No description', MAX_TEXT_LENGTH) }],
-  ]);
+  ];
+
+  return buildPost(`[${repo}] #${issue.number} ${issue.title}`, content.concat(markdownToPostLines(
+    issue.body || 'No description'
+  )));
 }
 
 function buildIssueUpdateMessage(options) {
@@ -195,12 +210,15 @@ function buildIssueUpdateMessage(options) {
 
 function buildIssueCommentMessage(options) {
   const { repo, issue, comment, actor } = options;
-  return buildPost(`[${repo}] #${issue.number} comment`, [
+  const content = [
     [{ tag: 'text', text: `Comment by ${actor}` }],
     [{ tag: 'text', text: issue.title || '-' }],
     [{ tag: 'a', text: 'Open comment', href: comment && comment.html_url ? comment.html_url : issue.html_url }],
-    [{ tag: 'text', text: trimText(comment && comment.body ? comment.body : 'No comment body', MAX_TEXT_LENGTH) }],
-  ]);
+  ];
+
+  return buildPost(`[${repo}] #${issue.number} comment`, content.concat(markdownToPostLines(
+    comment && comment.body ? comment.body : 'No comment body'
+  )));
 }
 
 function buildPost(title, content) {
@@ -220,6 +238,7 @@ async function findFeishuMarker(github, repo, issueNumber) {
       return {
         commentId: comment.id,
         messageId: marker.messageId,
+        syncedCommentIds: Array.isArray(marker.syncedCommentIds) ? marker.syncedCommentIds : [],
       };
     }
   }
@@ -234,14 +253,93 @@ async function createFeishuMarker(github, repo, issueNumber, messageId) {
   const marker = JSON.stringify({
     messageId,
     createdAt: new Date().toISOString(),
+    syncedCommentIds: [],
   });
 
-  await github.requestJson(`/repos/${repo}/issues/${issueNumber}/comments`, {
+  const comment = await github.requestJson(`/repos/${repo}/issues/${issueNumber}/comments`, {
     method: 'POST',
     body: {
       body: `${MARKER_PREFIX}${marker}${MARKER_SUFFIX}\nSynced to Feishu topic.`,
     },
   });
+
+  return {
+    commentId: comment.id,
+    messageId,
+    syncedCommentIds: [],
+  };
+}
+
+async function updateFeishuMarker(github, repo, marker) {
+  const payload = JSON.stringify({
+    messageId: marker.messageId,
+    updatedAt: new Date().toISOString(),
+    syncedCommentIds: marker.syncedCommentIds || [],
+  });
+
+  await github.requestJson(`/repos/${repo}/issues/comments/${marker.commentId}`, {
+    method: 'PATCH',
+    body: {
+      body: `${MARKER_PREFIX}${payload}${MARKER_SUFFIX}\nSynced to Feishu topic.`,
+    },
+  });
+}
+
+async function markCommentSynced(github, repo, marker, commentId) {
+  if (!commentId || !marker || !marker.commentId) {
+    return;
+  }
+  marker.syncedCommentIds = marker.syncedCommentIds || [];
+  if (marker.syncedCommentIds.map(String).includes(String(commentId))) {
+    return;
+  }
+  marker.syncedCommentIds.push(commentId);
+  await updateFeishuMarker(github, repo, marker);
+}
+
+async function createFeishuRootThread(options) {
+  const { github, feishu, config, repo, issue, action, actor } = options;
+  const sent = await feishu.sendMessage(config.feishuChatId, buildIssueRootMessage({
+    repo,
+    issue,
+    action,
+    actor,
+  }));
+  const marker = await createFeishuMarker(github, repo, issue.number, sent.message_id);
+  console.log(`Created Feishu thread for ${repo}#${issue.number}: ${sent.message_id || '(unknown)'}`);
+  return marker;
+}
+
+async function syncExistingIssueComments(options) {
+  const { github, feishu, repo, issue, marker } = options;
+  const comments = await github.listIssueComments(repo, issue.number);
+  const synced = new Set((marker.syncedCommentIds || []).map(String));
+  let syncedCount = 0;
+
+  for (const comment of comments) {
+    if (!comment || !comment.id || isMarkerBody(comment.body || '') || synced.has(String(comment.id))) {
+      continue;
+    }
+
+    const actor = loginOf(comment.user);
+    const replied = await feishu.replyMessage(marker.messageId, buildIssueCommentMessage({
+      repo,
+      issue,
+      comment,
+      actor,
+    }));
+    marker.syncedCommentIds = marker.syncedCommentIds || [];
+    marker.syncedCommentIds.push(comment.id);
+    synced.add(String(comment.id));
+    syncedCount += 1;
+    console.log(`Backfilled issue comment ${comment.id}: ${replied.message_id || '(unknown)'}`);
+  }
+
+  if (syncedCount > 0) {
+    await updateFeishuMarker(github, repo, marker);
+  }
+
+  return syncedCount;
 }
 
 function parseMarker(body) {
@@ -268,8 +366,12 @@ function isInternalMarkerComment(payload) {
     payload &&
     payload.comment &&
     typeof payload.comment.body === 'string' &&
-    payload.comment.body.includes(MARKER_PREFIX)
+    isMarkerBody(payload.comment.body)
   );
+}
+
+function isMarkerBody(body) {
+  return typeof body === 'string' && body.includes(MARKER_PREFIX);
 }
 
 function createFeishuClient(config) {
@@ -455,6 +557,81 @@ function trimText(value, maxLength) {
     return text;
   }
   return `${text.slice(0, maxLength - 20)}\n... truncated ...`;
+}
+
+function markdownToPostLines(value) {
+  const text = trimText(String(value || ''), MAX_TEXT_LENGTH);
+  const lines = text.split(/\r?\n/);
+  const result = [];
+  let inCodeBlock = false;
+
+  for (const rawLine of lines) {
+    if (result.length >= MAX_POST_LINES) {
+      result.push([{ tag: 'text', text: '... truncated ...' }]);
+      break;
+    }
+
+    const line = rawLine.replace(/\s+$/, '');
+    if (line.trim().startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+
+    if (line.trim() === '') {
+      if (result.length > 0 && result[result.length - 1].length > 0) {
+        result.push([{ tag: 'text', text: ' ' }]);
+      }
+      continue;
+    }
+
+    result.push(markdownLineToPostElements(line, inCodeBlock));
+  }
+
+  return result.length > 0 ? result : [[{ tag: 'text', text: 'No content' }]];
+}
+
+function markdownLineToPostElements(line, inCodeBlock) {
+  if (inCodeBlock) {
+    return [{ tag: 'text', text: line }];
+  }
+
+  let text = line
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^>\s?/, '')
+    .replace(/^[-*+]\s+/, '• ')
+    .replace(/^(\d+)\.\s+/, '$1. ')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1');
+
+  return inlineMarkdownToPostElements(text);
+}
+
+function inlineMarkdownToPostElements(text) {
+  const elements = [];
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s]+)/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      elements.push({ tag: 'text', text: text.slice(lastIndex, match.index) });
+    }
+
+    if (match[1] && match[2]) {
+      elements.push({ tag: 'a', text: match[1], href: match[2] });
+    } else if (match[3]) {
+      elements.push({ tag: 'a', text: match[3], href: match[3] });
+    }
+
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    elements.push({ tag: 'text', text: text.slice(lastIndex) });
+  }
+
+  return elements.length > 0 ? elements : [{ tag: 'text', text }];
 }
 
 function trimTrailingSlash(value) {
