@@ -76,13 +76,21 @@ async function handleManualDispatch(options) {
     actor,
   });
 
-  const rootUpdated = await feishu.updateMessageIfChanged(activeMarker.messageId, buildIssueRootMessage({
+  const rootRefreshed = await refreshRootMessage({
+    github,
+    feishu,
+    config,
     repo,
     issue,
-    action: 'synced',
-    actor,
-  }));
-  console.log(`${rootUpdated ? 'Updated' : 'Skipped unchanged'} Feishu root thread: ${activeMarker.messageId}`);
+    marker: activeMarker,
+    message: buildIssueRootMessage({
+      repo,
+      issue,
+      action: 'synced',
+      actor,
+    }),
+  });
+  console.log(`${rootRefreshed ? 'Refreshed' : 'Skipped unchanged'} Feishu root thread: ${activeMarker.messageId}`);
 
   const refreshedCount = await syncExistingIssueComments({
     github,
@@ -117,13 +125,21 @@ async function handleIssueEvent(options) {
     return;
   }
 
-  const updated = await feishu.updateMessageIfChanged(marker.messageId, buildIssueRootMessage({
+  const refreshed = await refreshRootMessage({
+    github,
+    feishu,
+    config,
     repo,
     issue,
-    action,
-    actor,
-  }));
-  console.log(`${updated ? 'Updated' : 'Skipped unchanged'} Feishu thread for ${repo}#${issue.number}: ${marker.messageId}`);
+    marker,
+    message: buildIssueRootMessage({
+      repo,
+      issue,
+      action,
+      actor,
+    }),
+  });
+  console.log(`${refreshed ? 'Refreshed' : 'Skipped unchanged'} Feishu thread for ${repo}#${issue.number}: ${marker.messageId}`);
 }
 
 async function handleIssueCommentEvent(options) {
@@ -159,8 +175,16 @@ async function handleIssueCommentEvent(options) {
   });
   const existingMessageId = getCommentMessageId(marker, payload.comment && payload.comment.id);
   if (existingMessageId) {
-    const updated = await feishu.updateMessageIfChanged(existingMessageId, commentMessage);
-    console.log(`${updated ? 'Updated' : 'Skipped unchanged'} issue comment ${payload.comment.id} in Feishu: ${existingMessageId}`);
+    const refreshed = await refreshCommentMessage({
+      github,
+      feishu,
+      repo,
+      marker,
+      commentId: payload.comment && payload.comment.id,
+      message: commentMessage,
+      existingMessageId,
+    });
+    console.log(`${refreshed ? 'Refreshed' : 'Skipped unchanged'} issue comment ${payload.comment.id} in Feishu`);
     return;
   }
 
@@ -217,6 +241,141 @@ function buildPost(title, content) {
       content,
     },
   };
+}
+
+function buildCard(message) {
+  const post = message && message.zh_cn ? message.zh_cn : { title: '', content: [] };
+  const lines = post.content || [];
+  const summary = postLineToMarkdown(lines[0] || []);
+  const stateLine = findTextLine(lines, 'State: ');
+  const bodyLines = lines.filter((line, index) => (
+    index > 0 &&
+    !isStateLine(line) &&
+    !isLinkOnlyLine(line)
+  )).map(postLineToMarkdown).filter(Boolean);
+  const links = lines.flatMap((line) => (line || []).filter((element) => element && element.tag === 'a'));
+  const elements = [];
+
+  if (summary) {
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `**${escapeLarkMarkdown(summary)}**`,
+      },
+    });
+  }
+
+  if (stateLine) {
+    elements.push({
+      tag: 'div',
+      fields: [
+        {
+          is_short: true,
+          text: {
+            tag: 'lark_md',
+            content: `**State**\n${escapeLarkMarkdown(stateLine.replace(/^State:\s*/, '') || '-')}`,
+          },
+        },
+      ],
+    });
+  }
+
+  if (bodyLines.length > 0) {
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: trimText(bodyLines.join('\n'), MAX_TEXT_LENGTH),
+      },
+    });
+  }
+
+  if (links.length > 0) {
+    elements.push({
+      tag: 'action',
+      actions: links.map((link) => ({
+        tag: 'button',
+        type: 'primary',
+        text: {
+          tag: 'plain_text',
+          content: trimText(link.text || 'Open', 80),
+        },
+        url: link.href || '',
+      })),
+    });
+  }
+
+  return {
+    config: {
+      wide_screen_mode: true,
+    },
+    header: {
+      template: cardHeaderTemplate(stateLine),
+      title: {
+        tag: 'plain_text',
+        content: trimText(post.title || '', 200),
+      },
+    },
+    elements,
+  };
+}
+
+function findTextLine(lines, prefix) {
+  for (const line of lines || []) {
+    const text = textOnlyLine(line);
+    if (text.startsWith(prefix)) {
+      return text;
+    }
+  }
+  return '';
+}
+
+function isStateLine(line) {
+  return textOnlyLine(line).startsWith('State: ');
+}
+
+function isLinkOnlyLine(line) {
+  return Boolean(
+    line &&
+    line.length === 1 &&
+    line[0] &&
+    line[0].tag === 'a'
+  );
+}
+
+function textOnlyLine(line) {
+  return (line || []).map((element) => (
+    element && element.tag === 'text' ? element.text || '' : ''
+  )).join('').trim();
+}
+
+function cardHeaderTemplate(stateLine) {
+  const state = String(stateLine || '').toLowerCase();
+  if (state.includes('closed')) {
+    return 'grey';
+  }
+  if (state.includes('open')) {
+    return 'green';
+  }
+  return 'blue';
+}
+
+function postLineToMarkdown(line) {
+  return (line || []).map((element) => {
+    if (!element || element.tag === 'text') {
+      return escapeLarkMarkdown(element && element.text ? element.text : '');
+    }
+    if (element.tag === 'a') {
+      return `[${escapeLarkMarkdown(element.text || element.href || 'link')}](${element.href || ''})`;
+    }
+    return '';
+  }).join('').trim();
+}
+
+function escapeLarkMarkdown(value) {
+  return String(value || '').replace(/([*_`~])/g, '\\$1');
 }
 
 async function findFeishuMarker(github, repo, issueNumber) {
@@ -347,6 +506,41 @@ async function createFeishuRootThread(options) {
   return marker;
 }
 
+async function refreshRootMessage(options) {
+  const { github, feishu, config, repo, issue, marker, message } = options;
+  try {
+    return await feishu.updateMessageIfChanged(marker.messageId, message);
+  } catch (error) {
+    if (!isFeishuNotCardError(error)) {
+      throw error;
+    }
+
+    const sent = await feishu.sendMessage(config.feishuChatId, message);
+    marker.messageId = sent.message_id;
+    marker.syncedCommentIds = [];
+    marker.commentMessages = {};
+    await updateFeishuMarker(github, repo, marker);
+    console.log(`Migrated non-card Feishu root for ${repo}#${issue.number}: ${sent.message_id || '(unknown)'}`);
+    return true;
+  }
+}
+
+async function refreshCommentMessage(options) {
+  const { github, feishu, repo, marker, commentId, message, existingMessageId } = options;
+  try {
+    return await feishu.updateMessageIfChanged(existingMessageId, message);
+  } catch (error) {
+    if (!isFeishuNotCardError(error)) {
+      throw error;
+    }
+
+    const replied = await feishu.replyMessage(marker.messageId, message);
+    await markCommentSynced(github, repo, marker, commentId, replied.message_id);
+    console.log(`Migrated non-card Feishu comment ${commentId}: ${replied.message_id || '(unknown)'}`);
+    return true;
+  }
+}
+
 async function syncExistingIssueComments(options) {
   const { github, feishu, repo, issue, marker } = options;
   const comments = await github.listIssueComments(repo, issue.number);
@@ -367,11 +561,19 @@ async function syncExistingIssueComments(options) {
     });
     const existingMessageId = getCommentMessageId(marker, comment.id);
     if (existingMessageId) {
-      const updated = await feishu.updateMessageIfChanged(existingMessageId, commentMessage);
-      if (updated) {
+      const refreshed = await refreshCommentMessage({
+        github,
+        feishu,
+        repo,
+        marker,
+        commentId: comment.id,
+        message: commentMessage,
+        existingMessageId,
+      });
+      if (refreshed) {
         refreshedCount += 1;
       }
-      console.log(`${updated ? 'Updated' : 'Skipped unchanged'} issue comment ${comment.id}: ${existingMessageId}`);
+      console.log(`${refreshed ? 'Refreshed' : 'Skipped unchanged'} issue comment ${comment.id}: ${existingMessageId}`);
       continue;
     }
 
@@ -446,6 +648,7 @@ function createFeishuClient(config) {
 
   async function sendMessage(chatId, message) {
     const token = await getTenantAccessToken();
+    const card = buildCard(message);
     const data = await requestJson(`${config.feishuOpenapiBase}/open-apis/im/v1/messages?receive_id_type=chat_id`, {
       method: 'POST',
       headers: {
@@ -453,8 +656,8 @@ function createFeishuClient(config) {
       },
       body: {
         receive_id: chatId,
-        msg_type: 'post',
-        content: JSON.stringify(message),
+        msg_type: 'interactive',
+        content: JSON.stringify(card),
       },
     });
     assertFeishuOK(data, 'send message');
@@ -463,14 +666,15 @@ function createFeishuClient(config) {
 
   async function replyMessage(rootMessageId, message) {
     const token = await getTenantAccessToken();
+    const card = buildCard(message);
     const data = await requestJson(`${config.feishuOpenapiBase}/open-apis/im/v1/messages/${encodeURIComponent(rootMessageId)}/reply`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
       },
       body: {
-        msg_type: 'post',
-        content: JSON.stringify(message),
+        msg_type: 'interactive',
+        content: JSON.stringify(card),
       },
     });
     assertFeishuOK(data, 'reply message');
@@ -491,13 +695,14 @@ function createFeishuClient(config) {
 
   async function updateMessage(messageId, message) {
     const token = await getTenantAccessToken();
+    const card = buildCard(message);
     const data = await requestJson(`${config.feishuOpenapiBase}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`, {
       method: 'PATCH',
       headers: {
         Authorization: `Bearer ${token}`,
       },
       body: {
-        content: JSON.stringify(message),
+        content: JSON.stringify(card),
       },
     });
     assertFeishuOK(data, 'update message');
@@ -506,7 +711,7 @@ function createFeishuClient(config) {
 
   async function updateMessageIfChanged(messageId, message) {
     const currentContent = await getMessageContent(messageId);
-    const nextContent = JSON.stringify(message);
+    const nextContent = JSON.stringify(buildCard(message));
     if (normalizeMessageContent(currentContent) === normalizeMessageContent(nextContent)) {
       return false;
     }
@@ -580,7 +785,13 @@ async function requestJson(url, options = {}) {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    throw new Error(`HTTP request failed: ${response.status} ${text}`);
+    const error = new Error(`HTTP request failed: ${response.status} ${text}`);
+    error.httpStatus = response.status;
+    if (data && typeof data === 'object') {
+      error.feishuCode = data.code;
+      error.feishuMessage = data.msg || data.message;
+    }
+    throw error;
   }
   return data;
 }
@@ -588,8 +799,23 @@ async function requestJson(url, options = {}) {
 function assertFeishuOK(data, action) {
   if (!data || data.code !== 0) {
     const message = data && (data.msg || data.message) ? data.msg || data.message : 'unknown error';
-    throw new Error(`Feishu ${action} failed: ${message}`);
+    const error = new Error(`Feishu ${action} failed: ${message}`);
+    if (data && typeof data === 'object') {
+      error.feishuCode = data.code;
+      error.feishuMessage = message;
+    }
+    throw error;
   }
+}
+
+function isFeishuNotCardError(error) {
+  return Boolean(
+    error &&
+    (
+      Number(error.feishuCode) === 230001 ||
+      String(error.message || '').includes('This message is NOT a card')
+    )
+  );
 }
 
 function normalizeMessageContent(content) {
