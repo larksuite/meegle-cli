@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.17] - 2026-07-20
+
+### Fixed
+
+- Serialized store-backed OAuth refresh across CLI processes, rejected HTTP 200 error envelopes that omit `access_token`, retried requests with the newly persisted token, and guarded terminal-401 cleanup so a stale process can no longer overwrite or delete fresh credentials ([#40](https://github.com/larksuite/meegle-cli/issues/40)).
+
 ## [v1.0.16] - 2026-07-07
 
 ### Fixed

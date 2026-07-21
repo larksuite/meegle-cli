@@ -10,8 +10,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -45,6 +49,79 @@ func defaultConfigDir() string {
 }
 
 func (s *FileStore) filePath() string { return filepath.Join(s.dir, s.filename) }
+
+const (
+	refreshLockRetryDelay = 50 * time.Millisecond
+	refreshLockWait       = 30 * time.Second
+	refreshLockStaleAfter = 10 * time.Minute
+)
+
+// WithRefreshLock uses an exclusive lock file so independent CLI processes
+// sharing the same profile cannot refresh and overwrite credentials at once.
+// A crashed process leaves a recoverable stale lock rather than permanently
+// blocking future refreshes.
+func (s *FileStore) WithRefreshLock(fn func() error) error {
+	if err := os.MkdirAll(s.dir, 0700); err != nil {
+		return err
+	}
+	lockPath := s.filePath() + ".refresh.lock"
+	deadline := time.Now().Add(refreshLockWait)
+	for {
+		lockFile, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err == nil {
+			owner := fmt.Sprintf("%d-%d\n", os.Getpid(), time.Now().UnixNano())
+			_, _ = lockFile.WriteString(owner)
+			_ = lockFile.Close()
+			defer releaseRefreshLock(lockPath, owner)
+			return fn()
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("create token refresh lock: %w", err)
+		}
+
+		removed, err := removeStaleRefreshLock(lockPath)
+		if err != nil {
+			return err
+		}
+		if removed {
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for token refresh lock")
+		}
+		time.Sleep(refreshLockRetryDelay)
+	}
+}
+
+func removeStaleRefreshLock(lockPath string) (bool, error) {
+	info, err := os.Stat(lockPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat token refresh lock: %w", err)
+	}
+	if time.Since(info.ModTime()) <= refreshLockStaleAfter {
+		return false, nil
+	}
+
+	stalePath := fmt.Sprintf("%s.stale-%d-%d", lockPath, os.Getpid(), time.Now().UnixNano())
+	if err := os.Rename(lockPath, stalePath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+		return false, fmt.Errorf("recover stale token refresh lock: %w", err)
+	}
+	_ = os.Remove(stalePath)
+	return true, nil
+}
+
+func releaseRefreshLock(lockPath, owner string) {
+	data, err := os.ReadFile(lockPath)
+	if err == nil && string(data) == owner {
+		_ = os.Remove(lockPath)
+	}
+}
 
 const machineKeyFile = ".machine-key"
 

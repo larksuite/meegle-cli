@@ -46,9 +46,10 @@ func (s *KeychainStore) Save(data *TokenData) error {
 	if err != nil {
 		return err
 	}
-	_ = exec.Command("security", "delete-generic-password", "-s", serviceName, "-a", s.account).Run()
 	// Use -X with hex-encoded data passed as command arguments (not via -i
 	// interactive mode) to avoid command injection through the account name.
+	// -U updates an existing item atomically, so do not delete it first: a
+	// concurrent reader must never observe a temporary "no credentials" gap.
 	hexData := hex.EncodeToString(b)
 	cmd := exec.Command("security",
 		"add-generic-password",

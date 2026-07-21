@@ -89,6 +89,7 @@ func NewCLIApp(version string, staticCmds *StaticCommands) (*cliapp.App, error) 
 		lister, cache,
 		WithGlobalFlags(MeegleGlobalFlags),
 		WithTokenManager(ident.TokenManager),
+		WithActiveToken(ident.Token),
 		WithIdentitySource(ident.Source),
 		WithForceRefresh(forceRefresh),
 		WithDiscoveryFailureDegradation(true),
@@ -124,6 +125,7 @@ func ResolveMappedCommands() []types.MappedCommand {
 	}
 	setup := NewDynamicRegistrySetup(lister, cache,
 		WithTokenManager(ident.TokenManager),
+		WithActiveToken(ident.Token),
 		WithIdentitySource(ident.Source),
 	)
 	tools, _ := setup.resolveTools(context.Background())

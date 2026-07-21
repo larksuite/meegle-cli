@@ -751,6 +751,10 @@ JSON 输出示例（`auth status --format json`），token 被拒：
 {"authenticated": false, "host": "meegle.com", "reason": "token rejected by server"}
 ```
 
+对于 `meegle auth login` 管理的凭据，共用同一 profile 的多个 CLI 进程会串行执行
+token refresh。无效的刷新响应不会覆盖原凭据，旧进程晚到的 401 也不会清除其他进程
+刚刷新成功的新 token。
+
 ## 配置
 
 ### 配置文件

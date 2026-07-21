@@ -18,6 +18,13 @@ type TokenStore interface {
 	Clear() error
 }
 
+// tokenRefreshLocker serializes the complete load-refresh-save sequence.
+// Shared process-external stores should provide this optional capability;
+// injected and in-memory test stores may omit it.
+type tokenRefreshLocker interface {
+	WithRefreshLock(func() error) error
+}
+
 // tokenStoreFactory is the pluggable constructor used by CreateTokenStore.
 // Tests swap it via SetTokenStoreFactory so ResolveIdentity (and anything
 // else routing through CreateTokenStore) talks to an isolated store instead

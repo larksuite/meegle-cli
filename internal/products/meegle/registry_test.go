@@ -340,6 +340,7 @@ func TestDynamicRegistrySetup_Graceful401_ClearsTokenAndFlagsAuth(t *testing.T) 
 
 	setup := NewDynamicRegistrySetup(lister, nil,
 		WithTokenManager(tm),
+		WithActiveToken("stale"),
 		WithIdentitySource(SourceStore),
 	)
 
@@ -361,6 +362,28 @@ func TestDynamicRegistrySetup_Graceful401_ClearsTokenAndFlagsAuth(t *testing.T) 
 	}
 	if !store.cleared {
 		t.Error("expected token store to be cleared after terminal 401")
+	}
+}
+
+func TestDynamicRegistrySetup_Graceful401_PreservesNewerStoredToken(t *testing.T) {
+	lister := &unauthorizedLister{}
+	store := &memTokenStore{data: &auth.TokenData{AccessToken: "fresh"}}
+	tm := auth.NewTokenManager(store, "example.com")
+
+	setup := NewDynamicRegistrySetup(lister, nil,
+		WithTokenManager(tm),
+		WithActiveToken("stale"),
+		WithIdentitySource(SourceStore),
+	)
+
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatalf("expected graceful degradation on 401, got error: %v", err)
+	}
+	if store.cleared {
+		t.Fatal("stale process cleared a token refreshed by another process")
+	}
+	if store.data == nil || store.data.AccessToken != "fresh" {
+		t.Fatalf("newer token was not preserved: %+v", store.data)
 	}
 }
 
