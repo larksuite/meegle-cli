@@ -207,20 +207,20 @@ function shouldNotifyIssueAction(action) {
 }
 
 function buildIssueRootMessage(options) {
-  const { repo, issue, action, actor } = options;
+  const { issue, action, actor } = options;
   const content = [
     [{ tag: 'text', text: `Issue ${action} by ${actor}` }],
     [{ tag: 'text', text: `State: ${issue.state || '-'}` }],
     [{ tag: 'a', text: 'Open issue', href: issue.html_url }],
   ];
 
-  return buildPost(`[${repo}] #${issue.number} ${issue.title}`, content.concat(markdownToPostLines(
+  return buildPost(`#${issue.number} ${issue.title}`, content.concat(markdownToPostLines(
     issue.body || 'No description'
   )));
 }
 
 function buildIssueCommentMessage(options) {
-  const { repo, issue, comment, actor } = options;
+  const { issue, comment, actor } = options;
   const commentLines = markdownToPostLines(comment && comment.body ? comment.body : 'No comment body');
   const content = [
     [
@@ -231,7 +231,7 @@ function buildIssueCommentMessage(options) {
     [{ tag: 'a', text: 'Open comment', href: comment && comment.html_url ? comment.html_url : issue.html_url }],
   ];
 
-  return buildPost(`[${repo}] #${issue.number} comment`, content);
+  return buildPost('', content);
 }
 
 function buildPost(title, content) {
@@ -248,6 +248,7 @@ function buildCard(message) {
   const lines = post.content || [];
   const summary = postLineToMarkdown(lines[0] || []);
   const stateLine = findTextLine(lines, 'State: ');
+  const showHeader = Boolean(post.title);
   const bodyLines = lines.filter((line, index) => (
     index > 0 &&
     !isStateLine(line) &&
@@ -258,24 +259,23 @@ function buildCard(message) {
 
   if (summary) {
     elements.push({
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: `**${escapeLarkMarkdown(summary)}**`,
-      },
+      tag: 'note',
+      elements: [
+        {
+          tag: 'plain_text',
+          content: summary,
+        },
+      ],
     });
   }
 
   if (stateLine) {
     elements.push({
-      tag: 'div',
-      fields: [
+      tag: 'note',
+      elements: [
         {
-          is_short: true,
-          text: {
-            tag: 'lark_md',
-            content: `**State**\n${escapeLarkMarkdown(stateLine.replace(/^State:\s*/, '') || '-')}`,
-          },
+          tag: 'plain_text',
+          content: `State: ${stateLine.replace(/^State:\s*/, '') || '-'}`,
         },
       ],
     });
@@ -298,6 +298,7 @@ function buildCard(message) {
       actions: links.map((link) => ({
         tag: 'button',
         type: 'primary',
+        size: 'small',
         text: {
           tag: 'plain_text',
           content: trimText(link.text || 'Open', 80),
@@ -307,19 +308,24 @@ function buildCard(message) {
     });
   }
 
-  return {
+  const card = {
     config: {
       wide_screen_mode: true,
     },
-    header: {
+    elements,
+  };
+
+  if (showHeader) {
+    card.header = {
       template: cardHeaderTemplate(stateLine),
       title: {
         tag: 'plain_text',
-        content: trimText(post.title || '', 200),
+        content: trimText(post.title, 200),
       },
-    },
-    elements,
-  };
+    };
+  }
+
+  return card;
 }
 
 function findTextLine(lines, prefix) {
