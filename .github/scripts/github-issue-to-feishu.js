@@ -256,28 +256,32 @@ function buildCard(message) {
   )).map(postLineToMarkdown).filter(Boolean);
   const links = lines.flatMap((line) => (line || []).filter((element) => element && element.tag === 'a'));
   const elements = [];
+  const metaFields = [];
 
   if (summary) {
-    elements.push({
-      tag: 'note',
-      elements: [
-        {
-          tag: 'plain_text',
-          content: summary,
-        },
-      ],
+    metaFields.push({
+      is_short: true,
+      text: {
+        tag: 'lark_md',
+        content: escapeLarkMarkdown(summary),
+      },
     });
   }
 
   if (stateLine) {
+    metaFields.push({
+      is_short: true,
+      text: {
+        tag: 'lark_md',
+        content: `State: ${escapeLarkMarkdown(stateLine.replace(/^State:\s*/, '') || '-')}`,
+      },
+    });
+  }
+
+  if (metaFields.length > 0) {
     elements.push({
-      tag: 'note',
-      elements: [
-        {
-          tag: 'plain_text',
-          content: `State: ${stateLine.replace(/^State:\s*/, '') || '-'}`,
-        },
-      ],
+      tag: 'div',
+      fields: metaFields,
     });
   }
 
