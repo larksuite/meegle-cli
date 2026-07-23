@@ -362,8 +362,9 @@ func TestMeegleValidateStep_PassesWhenPresent(t *testing.T) {
 	step := &MeegleValidateStep{}
 	state := &pipeline.PipelineContext{
 		Parsed: &router.ParsedCommand{
-			FullPath: []string{"work-item", "get-brief"},
-			Flags:    map[string]any{"work_item_id": "123"},
+			FullPath:      []string{"work-item", "get-brief"},
+			Flags:         map[string]any{"work_item_id": "123"},
+			ExplicitFlags: map[string]any{"work_item_id": "123"},
 			Node: &registry.CommandNode{
 				Flags: []registry.FlagDef{
 					{Name: "work_item_id", Required: true, Type: "string"},
@@ -390,8 +391,9 @@ func TestMeegleValidateStep_BuildsValuesWhenNil(t *testing.T) {
 	step := &MeegleValidateStep{}
 	state := &pipeline.PipelineContext{
 		Parsed: &router.ParsedCommand{
-			FullPath: []string{"work-item", "get-brief"},
-			Flags:    map[string]any{"work_item_id": "456"},
+			FullPath:      []string{"work-item", "get-brief"},
+			Flags:         map[string]any{"work_item_id": "456"},
+			ExplicitFlags: map[string]any{"work_item_id": "456"},
 			Node: &registry.CommandNode{
 				Flags: []registry.FlagDef{
 					{Name: "work_item_id", Required: true, Type: "string"},
@@ -900,6 +902,48 @@ func TestNewPipelineFactory_DryRunSupportedEndToEnd(t *testing.T) {
 	}
 }
 
+// MCP schemas and README examples use snake_case while generated CLI flags use
+// kebab-case. Required values supplied through --params must normalize before
+// MeegleValidateStep checks them.
+func TestNewPipelineFactoryParamsSatisfyRequiredSnakeCaseFlags(t *testing.T) {
+	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil))
+	pipe, err := factory(cliapp.Config{})
+	if err != nil {
+		t.Fatalf("pipeline factory: %v", err)
+	}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			FullPath: []string{"workitem", "create"},
+			Node: &registry.CommandNode{
+				HandlerRef: "create_workitem",
+				Flags: []registry.FlagDef{
+					{Name: "work-item-type", Required: true, Type: registry.FlagTypeString},
+					{Name: "project-key", Required: true, Type: registry.FlagTypeString},
+				},
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					"mcp_param_types": `{"work-item-type":"string","project-key":"string"}`,
+				}},
+			},
+			Flags: map[string]any{
+				"params":  `{"work_item_type":"testcase","project_key":"DEMO"}`,
+				"dry-run": true,
+			},
+			ExplicitFlags: map[string]any{
+				"params":  `{"work_item_type":"testcase","project_key":"DEMO"}`,
+				"dry-run": true,
+			},
+		},
+	}
+	if err := pipe.Execute(context.Background(), state); err != nil {
+		t.Fatalf("pipeline execute: %v", err)
+	}
+	data := state.Result.Data.(map[string]any)
+	params := data["params"].(map[string]any)
+	if params["work_item_type"] != "testcase" || params["project_key"] != "DEMO" {
+		t.Fatalf("params = %#v", params)
+	}
+}
+
 // batchNDJSONHook reshapes batch payloads only when --format=ndjson AND the
 // node carries TagMcpBatch. Non-batch payloads (even if they happen to carry
 // {results, errors} keys) must pass through unchanged.
@@ -1129,7 +1173,7 @@ func TestNewPipelineFactory(t *testing.T) {
 	}
 	expectedNames := []string{
 		"param_merge",
-		"meegle_validate", "session", "mcp_executor", "auto_paginate", "batch_executor", "attachment_shortcut", "output",
+		"structured_flag_name_normalize", "meegle_validate", "session", "mcp_executor", "auto_paginate", "batch_executor", "attachment_shortcut", "output",
 	}
 	if len(pipe.Steps) != len(expectedNames) {
 		t.Fatalf("expected %d steps, got %d", len(expectedNames), len(pipe.Steps))

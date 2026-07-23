@@ -259,8 +259,8 @@ func rejectShellOperators(cmdStr string) error {
 }
 
 // stripQuoted returns cmdStr with characters inside "..." replaced by spaces,
-// so operator detection only inspects unquoted regions. Mirrors parseArgs's
-// quote/escape handling: only " is recognized, and \ escapes the next byte.
+// so operator detection only inspects unquoted regions. Double quotes group
+// values, and backslashes keep the following byte out of operator detection.
 func stripQuoted(cmdStr string) string {
 	b := make([]byte, len(cmdStr))
 	inQuotes := false
@@ -318,38 +318,5 @@ func parseArgs(app *cliapp.App, cmdStr string) []string {
 		}
 	}
 
-	// Simple tokenization (supports quotes)
-	var args []string
-	var current strings.Builder
-	inQuotes := false
-	escapeNext := false
-
-	for i := 0; i < len(cmdStr); i++ {
-		ch := cmdStr[i]
-		if escapeNext {
-			current.WriteByte(ch)
-			escapeNext = false
-			continue
-		}
-		if ch == '\\' {
-			escapeNext = true
-			continue
-		}
-		if ch == '"' {
-			inQuotes = !inQuotes
-			continue
-		}
-		if ch == ' ' && !inQuotes {
-			if current.Len() > 0 {
-				args = append(args, current.String())
-				current.Reset()
-			}
-			continue
-		}
-		current.WriteByte(ch)
-	}
-	if current.Len() > 0 {
-		args = append(args, current.String())
-	}
-	return args
+	return cliapp.ParseCommandStringArgs(cmdStr)
 }

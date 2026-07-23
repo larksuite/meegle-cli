@@ -123,7 +123,7 @@ meegle workitem create --work-item-type 类型key --fields '[{"field_key":"templ
 |------|------|
 | `vote-boolean`（轻量表态） | 计数器，只能由用户在界面操作 |
 | `vote-option` / `vote-option-multi`（投票） | 不支持通过接口伪造投票结果 |
-| `compound_field` / `multi_user_compound_field`（复合明细表） | 内部结构校验复杂，API 暂不支持 |
+| 计算字段 | 系统自动计算，只读 |
 
 ### 富文本与关联字段
 

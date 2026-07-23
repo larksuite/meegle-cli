@@ -274,6 +274,7 @@ Offline, no-network utility for parsing Meegle / Feishu Project URLs into struct
 
 | Command | Description |
 |---------|-------------|
+| `version` | Print the CLI version (`meegle --version` is an alias) |
 | `inspect [command]` | Inspect command parameters |
 | `completion bash\|zsh\|fish` | Generate shell completion script |
 | `completion install` | Auto-install shell completion |
@@ -536,7 +537,9 @@ meegle mywork todo --set action=this_week --set page_num=1
 ### --params JSON
 
 `--params` takes a JSON object; **each top-level key is merged in as a CLI flag**.
-The key must be a valid flag of the current command — it is not a free-form payload.
+Use either the MCP's `snake_case` parameter name or the CLI flag's `kebab-case`
+name. The key must be a valid parameter of the current command — it is not a
+free-form payload.
 
 ```bash
 # These two are equivalent:
@@ -548,6 +551,8 @@ Use `--params` when:
 
 - the value is a nested object or array (`fields[]`, `schedule{}`) — too awkward to inline as a flag
 - you want to set many parameters at once, or feed a payload from a file (see `@file.json` below)
+
+Required top-level parameters can also be supplied through `--params`; they are equivalent to passing the corresponding flags directly.
 
 ```bash
 meegle workitem create --project-key PROJ --work-item-type story \
@@ -641,6 +646,7 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--profile` | | Use a specific configuration profile |
 | `--refresh` | | Refresh cached commands from server (bypass the local 24 h cache) |
 | `--auto-paginate` | | Automatically fetch and merge all pages when the response contains pagination signals (`next_page_token` or `pagination.has_more`); merged list arrays are concatenated, and a 200-page safety cap plus a 3-empty-page streak guard prevent runaway loops |
+| `--version` | | Print the CLI version and exit (alias of `meegle version`) |
 
 ## Advanced Usage
 
@@ -730,6 +736,18 @@ meegle inspect
 # View parameters for a specific command
 meegle inspect workitem.create
 ```
+
+### Programmatic Command Strings
+
+Applications that embed the Go command-string SDK can represent line breaks
+with `\n`. For example, a value such as
+`--content "Line 1\n\nLine 2"` reaches the command as two paragraphs. Use
+`\\n` when the value must contain the literal characters `\n`; unsupported
+escape sequences retain their backslash.
+
+This decoding only applies to programmatic command-string entry points such as
+`CommandClient.Execute` and `ExecuteCommandString`. The `meegle` binary receives
+an argument array from the shell, so normal shell quoting rules apply there.
 
 ## Authentication
 

@@ -134,7 +134,10 @@ func (s *MeegleValidateStep) Execute(ctx context.Context, state *pipeline.Pipeli
 	}
 	for _, flag := range state.Parsed.Node.Flags {
 		if flag.Required {
-			if _, ok := state.Values[flag.Name]; !ok {
+			// Cobra defaults are present in Values even when the user did not pass
+			// the flag. ParamMergeStep has already promoted --params keys into
+			// ExplicitFlags, so it is the authoritative requiredness check here.
+			if _, ok := state.Parsed.ExplicitFlags[flag.Name]; !ok {
 				return meerrors.NewClientError("CLIENT_MISSING_REQUIRED",
 					fmt.Sprintf("missing required parameter: --%s", flag.Name)).
 					WithSuggestion(fmt.Sprintf("meegle %s --help", state.Parsed.Node.FullPathString()))
@@ -177,6 +180,48 @@ func (s *MeegleValidateStep) Execute(ctx context.Context, state *pipeline.Pipeli
 				fmt.Sprintf("invalid value %q for --%s; allowed: %s", candidate, flag.Name, strings.Join(flag.Enum, "|")))
 		}
 	}
+	return nil
+}
+
+// normalizeStructuredFlagNames accepts MCP's snake_case parameter names in
+// --params / --set alongside the CLI's kebab-case flag names. Dynamic command
+// flags are generated as kebab-case, but README examples and MCP payloads use
+// snake_case. A directly supplied CLI flag keeps precedence over its
+// snake_case structured equivalent.
+func normalizeStructuredFlagNames(state *pipeline.PipelineContext) {
+	if state == nil || state.Parsed == nil || state.Parsed.Node == nil {
+		return
+	}
+	known := make(map[string]struct{})
+	for _, flag := range append(state.Parsed.Node.InheritedFlags(), state.Parsed.Node.Flags...) {
+		known[flag.Name] = struct{}{}
+	}
+	for key, value := range state.Parsed.ExplicitFlags {
+		kebab := strings.ReplaceAll(key, "_", "-")
+		if key == kebab {
+			continue
+		}
+		if _, ok := known[kebab]; !ok {
+			continue
+		}
+		if _, direct := state.Parsed.ExplicitFlags[kebab]; !direct {
+			state.Parsed.Flags[kebab] = value
+			state.Parsed.ExplicitFlags[kebab] = value
+		}
+		delete(state.Parsed.Flags, key)
+		delete(state.Parsed.ExplicitFlags, key)
+	}
+}
+
+// StructuredFlagNameNormalizeStep maps MCP snake_case structured parameters
+// to their generated kebab-case CLI flag names after ParamMergeStep.
+type StructuredFlagNameNormalizeStep struct{}
+
+func (s *StructuredFlagNameNormalizeStep) Name() string { return "structured_flag_name_normalize" }
+
+func (s *StructuredFlagNameNormalizeStep) Execute(ctx context.Context, state *pipeline.PipelineContext) error {
+	_ = ctx
+	normalizeStructuredFlagNames(state)
 	return nil
 }
 
@@ -999,6 +1044,7 @@ func newPipelineFactory(setup *DynamicRegistrySetup) cliapp.PipelineFactory {
 	return func(cfg cliapp.Config) (*pipeline.Pipeline, error) {
 		return &pipeline.Pipeline{Steps: []pipeline.PipelineStep{
 			&pipeline.ParamMergeStep{},
+			&StructuredFlagNameNormalizeStep{},
 			&MeegleValidateStep{},
 			&SessionStep{},
 			&McpExecutorStep{CommandsFunc: setup.MappedCommands},

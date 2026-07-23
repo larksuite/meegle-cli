@@ -141,6 +141,8 @@ func rootCustomizer(staticCmds *StaticCommands, client *mcpclient.Client, setup 
 			return
 		}
 		root.Short = "Agent-First CLI for Meegle (Lark Project)"
+		root.Version = meta.Version
+		root.SetVersionTemplate("{{.Version}}\n")
 		root.Long = `Agent-First CLI for Meegle (Lark Project)
 
 Domain Model:

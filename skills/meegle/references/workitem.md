@@ -38,3 +38,4 @@
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | --project-key | string | 是 | 空间 key |
+| --work-item-type | string | 是 | 要创建的工作项类型 key |

@@ -4,8 +4,13 @@
 package meegle
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+
+	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
 
 func TestBuildRegistrySetup_NilHeaders(t *testing.T) {
@@ -27,6 +32,25 @@ func TestBuildRegistrySetup_EmptyHost(t *testing.T) {
 	setup := BuildRegistrySetup("", nil)
 	if setup == nil {
 		t.Fatal("expected non-nil setup even with empty host")
+	}
+}
+
+func TestRootCustomizerVersionFlagAlias(t *testing.T) {
+	root := &cobra.Command{Use: "meegle"}
+	rootCustomizer(nil, nil, nil)(root, cliapp.RootCommandMetadata{
+		AppName: "meegle",
+		Version: "1.2.3",
+	})
+
+	stdout := &bytes.Buffer{}
+	root.SetOut(stdout)
+	root.SetErr(stdout)
+	root.SetArgs([]string{"--version"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute --version: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "1.2.3" {
+		t.Fatalf("--version output = %q, want %q", got, "1.2.3")
 	}
 }
 

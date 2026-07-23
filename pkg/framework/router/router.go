@@ -77,15 +77,9 @@ func (r *CommandRouter) Build(executor func(*ParsedCommand) error) error {
 	})
 	for _, flag := range registry.BuiltinFlags {
 		registerFlag(root.PersistentFlags(), flag)
-		if flag.Required {
-			_ = root.MarkPersistentFlagRequired(flag.Name)
-		}
 	}
 	for _, flag := range reg.Tree().GlobalFlags {
 		registerFlag(root.PersistentFlags(), flag)
-		if flag.Required {
-			_ = root.MarkPersistentFlagRequired(flag.Name)
-		}
 	}
 	for _, node := range reg.Root().Children {
 		r.registerNode(root, node, executor)
@@ -171,10 +165,11 @@ func (r *CommandRouter) registerNode(parent *cobra.Command, node *registry.Comma
 	cmd.Annotations = map[string]string{"command_path": node.FullPathString()}
 	for _, flag := range node.Flags {
 		registerFlag(cmd.PersistentFlags(), flag)
-		if flag.Required {
-			_ = cmd.MarkPersistentFlagRequired(flag.Name)
-		}
 	}
+	// Required flags are deliberately validated by the pipeline after
+	// ParamMergeStep. Cobra validates MarkPersistentFlagRequired before RunE,
+	// which would reject required values supplied via --params before they can
+	// be merged into ParsedCommand.Flags.
 	if node.IsExecutable() {
 		// Executable commands do not accept positional args; disable filename completion fallback
 		cmd.ValidArgsFunction = func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {

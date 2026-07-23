@@ -49,7 +49,10 @@ func (s *ParamValidateStep) Execute(ctx context.Context, state *PipelineContext)
 	flags := append(node.InheritedFlags(), node.Flags...)
 	for _, flag := range flags {
 		if flag.Required {
-			if _, ok := state.Parsed.Flags[flag.Name]; !ok {
+			// Requiredness is about whether the caller supplied a value, not
+			// whether the effective flag map contains a Cobra default. ParamMergeStep
+			// promotes --params / --set keys into ExplicitFlags before this runs.
+			if _, ok := state.Parsed.ExplicitFlags[flag.Name]; !ok {
 				return frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamRequired, fmt.Sprintf("missing required parameter --%s", flag.Name))
 			}
 		}

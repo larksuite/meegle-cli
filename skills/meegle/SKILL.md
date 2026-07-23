@@ -335,8 +335,63 @@ description: |
 | workitem_related_multi_select | ID 数组（**stringified**，数字元素） | `"[145405865,145405866]"` |
 | role_owners（仅创建时） | 角色-人员对象数组（**stringified**） | `"[{\"role\":\"RD\",\"owners\":[\"userkey1\"]}]"` |
 | signal | 纯字符串 | `"true"` / `"false"` / `"null"` |
+| compound_field | 普通复合明细表（**stringified** action 对象） | `"{\"action\":\"add\",\"fields\":[[{\"field_key\":\"sub_key1\",\"field_value\":\"v1\"}]]}"` |
+| multi_user_compound_field | 多人复合明细表（**仅更新已有人员**；stringified userkey map，整体覆盖） | `"{\"userkey1\":[{\"field_key\":\"sub_key1\",\"field_value\":\"v1\"}],\"userkey2\":[]}"` |
 
 > 更新角色时不用 fields，用 `workitem update` 的 `role_operate` 参数。
+
+### 普通复合明细表（compound_field）
+
+普通复合明细表通过 `workitem update` 写入时，`field_value` 是 **stringified JSON action 对象**。不要直接传 JSON object；实测会在客户端序列化阶段报 `unsupported type: map[string]interface {}, expected type: STRING`。
+
+```json
+{"action": "add", "fields": [[{"field_key": "子字段key", "field_value": "子字段值"}, ...]]}
+```
+
+- **action** — 操作类型：`"add"`（新增行）、`"update"`（更新行）、`"delete"`（删除行）
+- **fields** — **二维数组**：外层每个元素代表一行记录，内层是该行的子字段列表
+- 子字段的 `field_value` 遵循各自字段类型的 STRING 协议（text 传纯字符串，multi-user 传 stringified 数组等）
+- 子字段 key 从 `workitem meta-fields` 返回的 `compound_field_info` 中获取
+- `add` 不传行标识；读取新增结果后，每行会带 `group_uuid`
+- `update` / `delete` 必须原样传 `group_uuid` 定位行，键名就是 `group_uuid`，**不是 `record_id`**
+
+更新一行：
+
+```json
+{"action": "update", "group_uuid": "读回的组标识", "fields": [[{"field_key": "子字段key", "field_value": "新值"}]]}
+```
+
+删除一行：
+
+```json
+{"action": "delete", "group_uuid": "读回的组标识"}
+```
+
+### 多人复合明细表（multi_user_compound_field）
+
+多人复合明细表**不使用 action / group_uuid 协议**。写入值是 **stringified JSON map**：key 为填写人的 userkey，value 为该人员的子字段数组。
+
+```json
+{
+  "userkey1": [
+    {"field_key": "子字段key", "field_value": "子字段值"}
+  ],
+  "userkey2": []
+}
+```
+
+🚨 **这是整体覆盖，不是增量更新**。实测只传 `userkey1` 会把原有的 `userkey2` 整行删除。更新前必须：
+
+1. 用 `workitem get` 读取当前多人复合字段；返回 map 的 key 是当前人员范围，每个 value 含 `user`，有值时另含 `child_field_list`
+2. 用 `workitem meta-fields` 读取 `compound_field_info`，确定子字段 key、类型和枚举 option_id
+3. 重建**包含全部现有 userkey** 的 map；非目标人员的子字段值也要保留，只修改目标人员
+4. 将完整 map JSON.stringify 后写回；写后再次读取核对所有人员和目标子字段
+
+此协议只用于修改 `workitem get` 当前 map 中**已经存在的人员**。当前元数据只返回子字段配置；`workitem meta-roles` 也只返回角色字典，二者均不返回 `editable_personnel_range_type`、字段绑定角色、可选人员或新增人员协议。若当前值为空或目标人员不在 map 中，立即停止并说明当前 Skill / CLI 无法自动新增人员；请用户先通过页面把人员加入范围，再重新读取后更新。不要尝试用 `{"userkey":[]}` 新增人员——实测接口会返回成功但回读仍为空。
+
+枚举子字段仍传 option_id；读取返回的 `{label, value}` 不能原样回写，应取其中的 option_id 值。修改接口返回空成功不代表已落值，必须回读；若人员或目标值未变化，按未生效报告，不得宣称成功。
+
+> 版本说明：上述普通复合字段写法已在 meegle CLI 1.0.16 与 1.0.17 实测通过，不设置 1.0.17 最低版本门槛。
 
 ### 关联工作项字段（workitem_related_*）
 

@@ -83,7 +83,7 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 写法示例（详见 [api-examples.md](api-examples.md) 工作项域）：
 
 ```bash
-meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"bind","group_id":"oc_xxx"}"}]' --format json
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{\"type\":\"bind\",\"group_id\":\"oc_xxx\"}"}]' --format json
 ```
 
 ### STEP 5 — 返回结果
@@ -146,8 +146,9 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 |------|------|
 | `vote-boolean`（轻量表态） | 计数器，只能页面操作 |
 | `vote-option` / `vote-option-multi`（投票） | 不支持接口伪造 |
-| `compound_field` / `multi_user_compound_field`（复合明细表） | API 暂不支持 |
 | 计算字段 | 系统自动计算，只读 |
+
+> **复合明细表已支持通过 `workitem update` 写入**，但两类协议不同：`compound_field` 使用 stringified action 对象并以 `group_uuid` 定位行；`multi_user_compound_field` 使用 stringified userkey map，且是整体覆盖。更新多人复合字段前必须先读当前值并保留全部人员和非目标数据；该协议只更新当前 map 中已有人员，空值或目标人员不在 map 时不能自动新增人员，必须停止并请用户先通过页面配置人员范围。格式详见主文档 [SKILL.md](../SKILL.md)「字段值格式 → 复合明细表」章节。
 
 **富文本与关联字段**：
 - **富文本/多行文本** → 直接传 Markdown 字符串

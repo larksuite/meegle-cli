@@ -276,6 +276,7 @@ Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--
 
 | 命令 | 说明 |
 |------|------|
+| `version` | 输出 CLI 版本号（`meegle --version` 是别名） |
 | `inspect [command]` | 查看命令参数详情 |
 | `completion bash\|zsh\|fish` | 生成 Shell 补全脚本 |
 | `completion install` | 自动安装 Shell 补全 |
@@ -527,7 +528,8 @@ meegle mywork todo --set action=this_week --set page_num=1
 ### --params JSON
 
 `--params` 接收一个 JSON 对象，**每个顶层 key 都会作为 CLI flag 合并进来**。
-顶层 key 必须是当前命令的合法 flag —— 它不是一份自由结构的载荷。
+顶层 key 可使用 MCP 参数的 `snake_case` 名称或 CLI flag 的 `kebab-case` 名称；
+它必须是当前命令的合法参数，而不是一份自由结构的载荷。
 
 ```bash
 # 下面两条等价：
@@ -539,6 +541,8 @@ meegle workitem get --params '{"work_item_id":12345,"project_key":"PROJ"}'
 
 - 值是嵌套对象或数组（`fields[]`、`schedule{}`），直接写 flag 太别扭
 - 想一次性批量传多个参数，或者从文件加载载荷（见下方 `@file.json`）
+
+必填的顶层参数也可以通过 `--params` 提供，效果等价于直接传入对应的 flag。
 
 ```bash
 meegle workitem create --project-key PROJ --work-item-type story \
@@ -626,6 +630,7 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--profile` | | 指定配置 profile |
 | `--refresh` | | 从服务端刷新本地命令缓存（旁路 24 小时缓存） |
 | `--auto-paginate` | | 当响应包含分页信号（`next_page_token` 或 `pagination.has_more`）时自动拉取并合并所有页；列表数组会拼接，200 页安全上限与连续 3 空页保护防止失控循环 |
+| `--version` | | 输出 CLI 版本号并退出（`meegle version` 的别名） |
 
 ## 进阶用法
 
@@ -705,6 +710,16 @@ meegle inspect
 # 查看特定命令的参数详情
 meegle inspect workitem.create
 ```
+
+### 程序化命令字符串
+
+通过 Go 命令字符串 SDK 嵌入调用时，可以用 `\n` 表示换行。例如
+`--content "第一段\n\n第二段"` 会把两个段落传给命令。若需要传递字面量
+字符 `\n`，请写成 `\\n`；不支持的转义序列会保留反斜杠。
+
+该解码只作用于 `CommandClient.Execute`、`ExecuteCommandString` 等程序化
+命令字符串入口。`meegle` 二进制直接接收 shell 解析后的参数数组，因此仍遵循
+对应 shell 的引号和转义规则。
 
 ## 认证
 
