@@ -85,7 +85,7 @@ meegle workitem create --work-item-type story --fields '[{"field_key": "template
 创建缺陷 + 指定报告人（multi-user）+ 指定经办人（role_owners）——注意复合值必须 JSON.stringify：
 
 ```bash
-meegle workitem create --work-item-type issue --fields '[{"field_key":"name","field_value":"示例缺陷"},{"field_key":"priority","field_value":"2"},{"field_key":"template","field_value":"模板ID"},{"field_key":"issue_reporter","field_value":"["userkey1"]"},{"field_key":"role_owners","field_value":"[{"role":"operator","owners":["userkey1"]}]"}]' --project-key 空间key --work-item-id {{work_item_id}} --ignore-required {{ignore_required}} --ignore-role-calculate {{ignore_role_calculate}} --format json
+meegle workitem create --work-item-type issue --fields '[{"field_key":"name","field_value":"示例缺陷"},{"field_key":"priority","field_value":"2"},{"field_key":"template","field_value":"模板ID"},{"field_key":"issue_reporter","field_value":"[\"userkey1\"]"},{"field_key":"role_owners","field_value":"[{\"role\":\"operator\",\"owners\":[\"userkey1\"]}]"}]' --project-key 空间key --work-item-id {{work_item_id}} --ignore-required {{ignore_required}} --ignore-role-calculate {{ignore_role_calculate}} --format json
 ```
 
 > 🚨 `issue_reporter`（multi-user 类型的内置角色字段）和 `role_owners`（统一角色入口）是**两种可互换的写法**：前者走 meta-create-fields 返回的字段 key；后者用 meta-roles 返回的 role_id（如 `operator` / `reporter`，不含 `issue_` 前缀）。两者的 `field_value` 都必须是 **stringified JSON** 字符串。
@@ -106,27 +106,51 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 更新 multi-user 字段（复合值 stringified）：
 
 ```bash
-meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key": "current_status_operator", "field_value": "["userkey1","userkey2"]"}]' --format json
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key": "current_status_operator", "field_value": "[\"userkey1\",\"userkey2\"]"}]' --format json
 ```
+
+普通复合字段新增一行（`field_value` 是 stringified action 对象）：
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"复合字段key","field_value":"{\"action\":\"add\",\"fields\":[[{\"field_key\":\"子字段key\",\"field_value\":\"示例值\"}]]}"}]' --format json
+```
+
+普通复合字段更新 / 删除一行（`group_uuid` 必须先读取获得）：
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"复合字段key","field_value":"{\"action\":\"update\",\"group_uuid\":\"读回的组标识\",\"fields\":[[{\"field_key\":\"子字段key\",\"field_value\":\"新值\"}]]}"}]' --format json
+```
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"复合字段key","field_value":"{\"action\":\"delete\",\"group_uuid\":\"读回的组标识\"}"}]' --format json
+```
+
+多人复合字段更新已有人员并整体覆盖（必须先读取旧值并保留全部人员和非目标子字段；不能用来新增人员）：
+
+```bash
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"多人复合字段key","field_value":"{\"userkey1\":[{\"field_key\":\"子字段key\",\"field_value\":\"示例值\"}],\"userkey2\":[]}"}]' --format json
+```
+
+> 若当前值为空或目标 userkey 不在读回 map 中，停止自动更新并请用户先通过页面配置人员范围；接口空成功后仍必须回读确认。
 
 更新拉群方式（`group_type` 逻辑字段，统一替代旧 `group_id` / `chat_group`）——三种形态：
 
 切到自动拉群（不带 `group_id`）：
 
 ```bash
-meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"auto"}"}]' --format json
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{\"type\":\"auto\"}"}]' --format json
 ```
 
 绑定现有群（`type=bind` 必须带非空 `group_id`）：
 
 ```bash
-meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"bind","group_id":"oc_xxx"}"}]' --format json
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{\"type\":\"bind\",\"group_id\":\"oc_xxx\"}"}]' --format json
 ```
 
 关闭拉群：
 
 ```bash
-meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{"type":"disabled"}"}]' --format json
+meegle workitem update --work-item-id 工作项ID --project-key 空间key --role-operate '{{role_operate}}' --fields '[{"field_key":"group_type","field_value":"{\"type\":\"disabled\"}"}]' --format json
 ```
 
 ---

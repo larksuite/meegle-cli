@@ -45,10 +45,15 @@ func TestCommandRouterRoutesAndSeparatesExplicitFlags(t *testing.T) {
 	}
 }
 
-func TestCommandRouterWrapsRequiredFlagError(t *testing.T) {
+func TestCommandRouterDefersRequiredFlagValidationToPipeline(t *testing.T) {
 	r := newTestRouter(t)
-	_, err := r.Route(&frameworkadapter.RawInput{Context: context.Background(), Args: []string{"workitem", "create"}})
-	assertCLIError(t, err, frameworkerrors.CodeParamRequired)
+	parsed, err := r.Route(&frameworkadapter.RawInput{Context: context.Background(), Args: []string{"workitem", "create"}})
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if parsed == nil || parsed.Node == nil || parsed.Node.Name != "create" {
+		t.Fatalf("parsed node = %#v", parsed)
+	}
 }
 
 func TestCommandRouterWrapsUnknownCommandError(t *testing.T) {

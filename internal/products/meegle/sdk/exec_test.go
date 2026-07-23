@@ -189,6 +189,19 @@ func TestParseArgs_QuotedArgs(t *testing.T) {
 	}
 }
 
+func TestParseArgs_EscapedNewlines(t *testing.T) {
+	args := parseArgs(nil, `meegle comment add --content "first line\n\nsecond line"`)
+	expected := []string{"comment", "add", "--content", "first line\n\nsecond line"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg %d: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
 func TestRejectShellOperators(t *testing.T) {
 	tests := []struct {
 		name        string

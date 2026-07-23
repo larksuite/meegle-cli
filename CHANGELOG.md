@@ -8,6 +8,17 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.18] - 2026-07-24
+
+### Added
+
+- Added `meegle --version` as an alias of `meegle version`, with identical plain version output.
+
+### Fixed
+
+- Required command parameters supplied through `--params` (for example `work_item_type` and `project_key` on `workitem create`) now pass CLI validation and are forwarded to the MCP tool. Both MCP `snake_case` and CLI `kebab-case` key forms are accepted. Previously Cobra rejected them before the CLI's parameter-merge pipeline ran, and the snake_case form was not matched to generated CLI flags.
+- Programmatic command-string entry points now decode `\n` as real line breaks and preserve backslashes in unsupported escape sequences, preventing multiline comments from being stored with literal `nn`.
+
 ## [v1.0.17] - 2026-07-20
 
 ### Fixed

@@ -248,7 +248,7 @@ func isMetaCommand(args []string) bool {
 		return false
 	}
 	for _, arg := range args {
-		if arg == "-h" || arg == "--help" {
+		if arg == "-h" || arg == "--help" || arg == "--version" {
 			return true
 		}
 	}

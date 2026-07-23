@@ -68,6 +68,45 @@ func TestAppExecuteWithIOJSONOutput(t *testing.T) {
 	}
 }
 
+// Required flags may be supplied through --params. Router-level Cobra required
+// validation runs before the pipeline and would otherwise reject this form
+// before ParamMergeStep can materialize the JSON keys as flags.
+func TestAppExecuteWithIOParamsSatisfyRequiredFlags(t *testing.T) {
+	app, err := newTestApp()
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	stdout := &bytes.Buffer{}
+	if err := app.ExecuteWithIO(context.Background(), []string{
+		"workitem", "create",
+		"--params", `{"key":"PROJ","priority":3}`,
+		"--format", "json",
+	}, stdout, stdout); err != nil {
+		t.Fatalf("execute with params: %v", err)
+	}
+	output := stdout.String()
+	for _, fragment := range []string{`"key": "PROJ"`, `"priority": 3`} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("expected output to contain %q, got %s", fragment, output)
+		}
+	}
+}
+
+func TestAppInvokeStillRejectsMissingRequiredFlag(t *testing.T) {
+	app, err := newTestApp()
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	_, err = app.Invoke(context.Background(), []string{"workitem", "create"})
+	if err == nil {
+		t.Fatal("expected missing required flag error")
+	}
+	cliErr := frameworkerrors.As(err)
+	if cliErr == nil || cliErr.Code != frameworkerrors.CodeParamRequired {
+		t.Fatalf("error = %v, want %s", err, frameworkerrors.CodeParamRequired)
+	}
+}
+
 func TestAppExecuteWithIOVersion(t *testing.T) {
 	app, err := newTestApp()
 	if err != nil {
@@ -79,6 +118,20 @@ func TestAppExecuteWithIOVersion(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout.String()) != "test-version" {
 		t.Fatalf("version output = %q", stdout.String())
+	}
+}
+
+func TestAppParseArgsToRequestRejectsVersionFlag(t *testing.T) {
+	app, err := newTestApp()
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	_, err = app.ParseArgsToRequest(context.Background(), []string{"--version"})
+	if err == nil {
+		t.Fatal("expected --version to be rejected as a meta command")
+	}
+	if !strings.Contains(err.Error(), "help/version command") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -122,7 +122,6 @@ meegle workflow update-node --work-item-id 工作项ID --node-schedule '{{node_s
 | `actual_work_time` | 实际工时 | 需在页面手动登记 |
 | `owners_finished_info` | 负责人完成结论与意见 | 仅各负责人可在页面操作 |
 | `vote-boolean` / `vote-option` / `vote-option-multi` | 投票类 | 仅支持页面交互 |
-| `compound_field` / `multi_user_compound_field` | 复合明细表 | API 暂不支持 |
 | 计算字段 | 系统自动计算 | 只读 |
 
 🚨 遇到硬拦截时输出：
