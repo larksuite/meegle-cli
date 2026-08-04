@@ -13,29 +13,30 @@ import (
 //   - Non-array input: single line.
 //   - Empty array: zero bytes.
 //
-// Strings with embedded newlines are escaped by json.Marshal.
+// Strings with embedded newlines are escaped by encoding/json.
 func EncodeNDJSON(data any) ([]byte, error) {
 	normalized := normalize(data)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+
 	if arr, ok := normalized.([]any); ok {
 		if len(arr) == 0 {
 			return nil, nil
 		}
-		var buf bytes.Buffer
+		// Reuse one encoder so array inputs do not allocate an encoder and
+		// buffer for every record.
 		for _, item := range arr {
-			enc, err := json.Marshal(item)
-			if err != nil {
+			if err := enc.Encode(item); err != nil {
 				return nil, err
 			}
-			buf.Write(enc)
-			buf.WriteByte('\n')
 		}
 		return buf.Bytes(), nil
 	}
-	enc, err := json.Marshal(normalized)
-	if err != nil {
+	if err := enc.Encode(normalized); err != nil {
 		return nil, err
 	}
-	return append(enc, '\n'), nil
+	return buf.Bytes(), nil
 }
 
 // normalize decodes json.RawMessage so array detection works uniformly.

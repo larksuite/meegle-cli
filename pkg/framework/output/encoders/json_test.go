@@ -53,3 +53,40 @@ func TestEncodeJSON_EmptyArray(t *testing.T) {
 		t.Fatalf("got: %q", out)
 	}
 }
+
+func TestEncodeJSON_URLRemainsCopyable(t *testing.T) {
+	const authURL = "https://meego.example.com/b/auth/mcp?channel=meegle-cli&mode=device&usercode=ABCD-1234"
+
+	out, err := EncodeJSON(map[string]any{"verification_uri_complete": authURL})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.Contains(string(out), authURL) {
+		t.Fatalf("expected literal URL in output, got: %s", out)
+	}
+	if strings.Contains(string(out), `\u0026`) {
+		t.Fatalf("expected ampersands to remain unescaped, got: %s", out)
+	}
+}
+
+func BenchmarkEncodeJSON_Array1000(b *testing.B) {
+	data := make([]any, 1000)
+	for i := range data {
+		data[i] = map[string]any{
+			"id":   i,
+			"name": "benchmark-record",
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := EncodeJSON(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(out) == 0 {
+			b.Fatal("expected output")
+		}
+	}
+}
