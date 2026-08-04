@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.19] - 2026-08-04
+
+### Fixed
+
+- JSON and NDJSON output now keep URL query separators such as `&` literal instead of escaping them as `\u0026`, so returned login and verification URLs can be copied directly.
+
 ## [v1.0.18] - 2026-07-24
 
 ### Added

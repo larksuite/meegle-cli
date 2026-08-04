@@ -21,7 +21,7 @@ func EncodeJSON(data any) ([]byte, error) {
 		}
 		return pretty.Bytes(), nil
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := marshalJSON(data)
 	if err != nil {
 		return nil, err
 	}
@@ -30,4 +30,18 @@ func EncodeJSON(data any) ([]byte, error) {
 		return encoded, nil
 	}
 	return pretty.Bytes(), nil
+}
+
+// marshalJSON encodes CLI output without HTML escaping. CLI JSON is written
+// to a terminal or pipe rather than embedded in HTML, so keeping characters
+// such as '&' literal makes URLs directly copyable while remaining valid JSON.
+// Encoder.Encode appends a newline, which is removed so callers control framing.
+func marshalJSON(data any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(data); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
