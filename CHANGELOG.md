@@ -8,6 +8,16 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.20] - 2026-08-20
+
+### Changed
+
+- Updated the bundled Meegle Agent Skill to the v5.4 guidance, including expanded MQL syntax, API examples, error handling, and work-item operation SOPs.
+
+### Fixed
+
+- Commands now report all missing required flags and positional arguments in one `CLIENT_MISSING_REQUIRED` error, in stable command-definition order, instead of failing one parameter at a time. Single-item wording, exit code, retryability, and help suggestions remain unchanged; JSON, NDJSON, and table error output all preserve the complete list.
+
 ## [v1.0.19] - 2026-08-04
 
 ### Fixed

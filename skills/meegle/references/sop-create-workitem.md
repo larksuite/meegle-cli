@@ -2,7 +2,7 @@
 
 > **CRITICAL** — 开始前 MUST 先用 Read 工具读取 `../SKILL.md`，其中包含前置检查、授权流程、命令参数参考、字段值格式、通用规范和错误处理。
 
-本技能用于在飞书项目中创建工作项（需求、任务、缺陷等），全程自动化执行，无需用户二次确认。
+本技能用于在飞书项目中创建工作项（需求、任务、缺陷等），全程自动化执行。
 
 ---
 
@@ -23,8 +23,6 @@
 2. 用 `workitem meta-types` 获取类型列表 → 确认 `work_item_type`
 
 > 唯一匹配则直接用，多个匹配则展示列表让用户选，无匹配则问用户。**禁止猜测。**
-
-> 资源工作项模板创建：如果用户明确表示“通过资源库模板/资源工作项创建”，或 URL 解析得到资源工作项模板实例 ID，则将该 ID 作为 `--work-item-id` 传给 `workitem create`；此时按工具约束，`--work-item-id` 是必填的资源模板实例 ID。
 
 ### STEP 3 — 收集元数据（并行）
 
@@ -68,34 +66,32 @@
 | 日期 | 转为毫秒时间戳 |
 | 其他类型 | 按主文档 [SKILL.md](../SKILL.md)「字段值格式」规范转换 |
 
-**格式速查**（完整格式见主文档 [SKILL.md](../SKILL.md)「字段值格式」）：
+**格式速查**（创建场景特有约束；通用类型见主文档 [SKILL.md](../SKILL.md)「字段值格式」章节）：
 
-> 🚨 **关键约定**：`field_value` 协议层是 **STRING**。标量（text/user/option_id/timestamp）直接传字符串；数组、对象**必须先 JSON.stringify 成字符串**，否则会报 `need STRING type, but got: LIST`。
+> 🚨 **关键约定**：`field_value` 协议层是 **STRING**。标量直接字符串化；数组/对象**必须先 JSON.stringify**，否则会报 `need STRING type, but got: LIST`。
 
-| 字段类型 | field_value 传参 |
-|---------|-----------------|
-| text | `"文本内容"` |
-| select / radio | `"option_id"`（从字段配置获取） |
-| user | `"userkey"` |
-| multi-user | `"[\"userkey1\",\"userkey2\"]"`（stringified） |
-| schedule | `"[开始时间戳,结束时间戳]"`（stringified） |
-| file / multi-file | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-type <type> --field-key <field_key> <local-path>` 拿 `file_token`（工作项尚未创建，传 `--work-item-type` 而非 `--work-item-id`），再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
+| 字段类型 | 差异化提示 |
+|---------|-----------|
+| `role_owners` | **仅创建时可用**；stringified 对象数组 `"[{\"role\":\"<role_id>\",\"owners\":[\"<userkey>\"]}]"` |
+| `signal` | option_id 纯字符串 `"<option_id>"`（以 `workitem meta-fields` 的 `options[].option_id` 为准；不接受 `"true"`/`"false"`/`"null"`） |
+| `workitem_related_multi_select` | **stringified** ID 数组，**禁止写入自身 ID**（防循环引用，触发 `exists loop`） |
+| `file` / `multi-file` | 先调 `attachment +upload`，传 `--resource-type=15`、`--project-key`、`--work-item-type`、`--field-key` 和本地文件路径（工作项尚未创建，不传 `--work-item-id`）拿 `file_token`，再 stringify 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"` |
+
+> 其余通用字段类型（text / user / multi-user / date / schedule / precise_date / select 系列等）写入格式详见主文档 [SKILL.md](../SKILL.md)「字段值格式」章节。
 
 **角色设置**（创建时）：通过 fields 中的 `role_owners` 字段，值为 stringified 对象数组：
 
 ```json
-{"field_key":"role_owners","field_value":"[{\"role\":\"RD\",\"owners\":[\"userkey1\"]}]"}
+{"field_key":"role_owners","field_value":"[{\"role\":\"<role_id>\",\"owners\":[\"<userkey>\"]}]"}
 ```
 
-> **角色补充**：创建时除了能在 `fields` 数组内处理极少部分内置的 role_owners 字段外，针对其他自定义角色（如 PO、PM、Tech Lead 等），请在创建后用 `workitem update` 的 `role_operate` 参数追加写入。
+> **角色补充**：创建时除了能在 `fields` 数组内处理极少部分内置的 role_owners 字段外，针对其他自定义角色（如 PO、PM、Tech Lead 等），须在创建后用 `workitem update` 的 `role_operate` 参数追加写入。
 
 ### STEP 6 — 创建
 
 ```bash
-meegle workitem create --work-item-type 类型key --fields '[{"field_key":"template","field_value":"模板ID"},{"field_key":"name","field_value":"标题"}]' --project-key 空间key --work-item-id {{work_item_id}} --ignore-required {{ignore_required}} --ignore-role-calculate {{ignore_role_calculate}} --format json
+meegle workitem create --work-item-type 类型key --fields '[{"field_key":"template","field_value":"模板ID"},{"field_key":"name","field_value":"标题"}]' --project-key 空间key --format json
 ```
-
-仅在用户明确要求跳过创建校验，或业务流程已确认由后端/后续步骤补齐时，才使用 `--ignore-required` / `--ignore-role-calculate`；默认不要主动开启。
 
 🚨 **批量创建**：当用户要求批量创建多个工作项时，必须**串行调用**（逐个请求），禁止高并发，以免触发平台限流。每个 field_value 均须符合「字段值格式」的 STRING 约定（标量直接字符串化；数组/对象 JSON.stringify）。
 
@@ -127,16 +123,16 @@ meegle workitem create --work-item-type 类型key --fields '[{"field_key":"templ
 
 ### 富文本与关联字段
 
-- **富文本/多行文本**：直接传 Markdown 字符串（`# 标题`、`|列1|列2|`、代码块等），完美渲染。
+- **富文本/多行文本**：直接传 Markdown 字符串（`# 标题`、`|列1|列2|`、代码块等）。
 - **关联云文档（PRD）**：传 URL 数组，如 `["https://xxx.feishu.cn/docx/xxx"]`。
-- **前置依赖/关联工作项**：传目标工作项 ID。**注意**：不同空间可能要求字符串 `"7093424682"` 或数字格式，遇到类型校验失败立刻切换格式重试。用户提供的是工作项**名称而非 ID** 时，按主文档 [SKILL.md](../SKILL.md)「关联工作项名称 → ID 转换」完整流程处理。
-- **系统外信号类型 (`signal`)**：不接收 option_id，传纯字符串 `"true"`、`"false"` 或 `"null"`。
+- **前置依赖/关联工作项**：传目标工作项 ID。**注意**：不同空间可能要求字符串 `"<work_item_id>"` 或数字格式，遇到类型校验失败立刻切换格式重试。用户提供的是工作项**名称而非 ID** 时，按 [field-value-extras.md](field-value-extras.md)「关联工作项名称 → ID 转换」完整流程处理。
+- **系统外信号类型 (`signal`)**：传 `option_id` 纯字符串（如 `"<option_id>"`；以 `workitem meta-fields` 的 `options[].option_id` 为准）。**不接受 `"true"` / `"false"` / `"null"`**。当前系统外信号常见 4 个 option：`passed` / `notpassed` / `processing` / `noinformationyet`。
 
 ---
 
 ## 错误自动恢复（自愈机制）
 
-> 通用自愈规则（格式错误、级联层级、枚举不合法）见主文档 [SKILL.md](../SKILL.md)「通用自愈规则」。以下为本 Skill 补充规则：
+> 通用自愈规则（格式错误、级联层级、枚举不合法）见 [error-handling.md](error-handling.md)。以下为本 SOP 补充规则：
 
 | 报错特征 | 自愈动作 |
 |---------|---------|
@@ -149,7 +145,7 @@ meegle workitem create --work-item-type 类型key --fields '[{"field_key":"templ
 
 ## 熔断机制 (Circuit Breaker)
 
-> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「通用熔断规则」。以下为本 Skill 补充规则：
+> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「错误处理」。以下为本 SOP 补充规则：
 
 1. **工作项类型未找到**：`workitem meta-types` 失败超过 3 次
 2. **字段转换大面积失败**：字段值转换失败比例 > 60%，终止流程并列出失败字段明细，**不要强行创建残缺数据**

@@ -25,7 +25,7 @@ func TestNewSDKPipelineFactory(t *testing.T) {
 	}
 	expectedNames := []string{
 		"sdk_inject", "param_merge",
-		"meegle_validate", "session", "mcp_executor", "output",
+		"structured_flag_name_normalize", "meegle_validate", "session", "mcp_executor", "output",
 	}
 	if len(pipe.Steps) != len(expectedNames) {
 		t.Fatalf("expected %d steps, got %d", len(expectedNames), len(pipe.Steps))

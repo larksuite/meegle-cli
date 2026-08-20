@@ -4,7 +4,7 @@
 
 本 Skill 用于**状态流工作项**（如缺陷 / issue）的状态流转，全程自动化编排。
 
-> ⚠️ **仅限状态流**。需求 / story 等节点流工作项请改用 `workflow transition`（action=confirm/rollback），不要混用本 Skill。
+> ⚠️ **仅限状态流**。需求 / story 等节点流工作项须改用 `workflow transition`（action=confirm/rollback），不要混用本 Skill。
 
 ---
 
@@ -18,7 +18,7 @@
    - **URL 解析**：用户给了链接则先调 `url decode`。只有 `url_kind == workitem_detail` 才能进入本 SOP；其他 kind 按 [url-kinds.md](url-kinds.md) 拒绝或追问。decode 返回的 `simple_name` 必须再调 `project search` 转为权威 `project_key`（同名空间可能有多个无权限）。**禁止**自己从 URL 截取路径段作参数。
    - **ID 类型**：传给任何工具的 `work_item_id` 必须是 **字符串（String）**。
    - 信息不足才追问。
-2. **获取当前用户**：调用 `user search`，入参 `["current_login_user()"]` 拿到当前用户的 `user_key`（下一步必填）。
+2. **获取当前用户**：调用 `user me`，从返回体取 `user_key`（下一步必填）。`current_login_user()` 仅为 MQL 内置函数字面量，`user search` 不会解析该字符串。
 
 ### STEP 2 — 查询可流转状态并匹配目标
 
@@ -85,22 +85,15 @@ meegle workitem meta-fields --page-num 1 --project-key 空间key --work-item-typ
 
 > 🚨 **关键约定**：`field_value` 协议层是 **STRING**。标量直接传字符串；数组/对象**必须 JSON.stringify**，否则报 `need STRING type, but got: LIST`。
 
-| 字段类型 | field_value 传参 |
+| 字段类型 | 状态流转场景差异化提示 |
 |---------|-----------------|
-| `text` / `multi-pure-text` / `link` | 字符串直接传入 |
-| `number` | 字符串化数字，如 `"100"` |
-| `bool` | `"true"` / `"false"` |
-| `user` | 单个 userkey，如 `"7509072868295085608"` |
-| `multi-user` | **stringified**，如 `"[\"key1\",\"key2\"]"` |
 | `select` / `radio` / `tree-select` | **纯字符串 `option_id`**（🚨 不要传 value/label 的 JSON） |
-| `multi-select` | **stringified**，如 `"[{\"option_id\":\"xxx\"}]"`（若字段配置允许新增选项且用户明确提出新值，可生成 8 位随机小写加下划线格式的 option_id 填入） |
-| `tree-multi-select` | **stringified 字符串数组**，如 `"[\"id1\",\"id2\"]"`（🚨 不可对象数组） |
-| `multi-text`（富文本） | Markdown 字符串 |
-| `date` | 毫秒时间戳，如 `"1722182400000"` |
-| `schedule` | **stringified**，如 `"[1722182400000,1722355199999]"` |
-| `precise_date` | **stringified**，如 `"{\"start_time\":...,\"end_time\":...}"` |
-| `workitem_related_select` | 关联工作项 ID 字符串 |
-| `file` / `multi-file` | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-id <id> --field-key <field_key> <local-path>` 拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
+| `multi-select` | **stringified** `"[{\"option_id\":\"xxx\"}]"`；若字段配置允许新增选项且用户明确提出新值，可生成 8 位随机小写加下划线格式的 option_id 填入 |
+| `tree-multi-select` | **stringified 字符串一维数组** `"[\"id1\",\"id2\"]"`（🚨 不可对象数组） |
+| `signal` | option_id 字符串（以 `workitem meta-fields` 的 `options[].option_id` 为准；不接受 `"true"`/`"false"`/`"null"`） |
+| `file` / `multi-file` | 先调 `attachment +upload`，传 `--resource-type=15`、`--project-key`、`--work-item-id`、`--field-key` 和本地文件路径拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"` |
+
+> 其余通用字段类型（text / number / bool / user / multi-user / date / schedule / precise_date / multi-text / workitem_related_select 等）写入格式详见主文档 [SKILL.md](../SKILL.md)「字段值格式」章节。
 
 > **用户提供的是工作项名称而非 ID** 时，按主文档 [SKILL.md](../SKILL.md)「关联工作项名称 → ID 转换」完整流程（获取目标约束 → `workitem query` 搜索 → 消歧 → 按类型写入）处理。
 
@@ -128,13 +121,13 @@ meegle workflow transition-state --work-item-id 工作项ID --project-key 空间
 
 ## 智能修复（自愈机制）
 
-> 通用自愈规则（格式错误、级联层级、枚举不合法）见主文档 [SKILL.md](../SKILL.md)「通用自愈规则」。本 Skill 无额外补充规则。
+> 通用自愈规则（格式错误、级联层级、枚举不合法）见 [error-handling.md](error-handling.md)。本 Skill 无额外补充规则。
 
 ---
 
 ## 熔断与终止
 
-> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「通用熔断规则」。以下为本 Skill 补充规则：
+> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「错误处理」。以下为本 Skill 补充规则：
 
 1. **必填字段全部为硬拦截类型**（投票/计算字段），无法通过接口写入。
 2. **同一目标状态**：补字段 → 再次流转连续失败 **> 2 次**。

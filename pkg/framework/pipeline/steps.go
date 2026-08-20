@@ -40,37 +40,89 @@ type ParamValidateStep struct{}
 
 func (s *ParamValidateStep) Name() string { return "param_validate" }
 
+// MissingRequiredInputs contains required flags and positional arguments that
+// were not supplied by the caller. Both slices preserve command-definition
+// order so callers can produce stable, help-aligned error messages.
+type MissingRequiredInputs struct {
+	Flags []string
+	Args  []string
+}
+
+// Len returns the total number of missing required inputs.
+func (m MissingRequiredInputs) Len() int {
+	return len(m.Flags) + len(m.Args)
+}
+
+// CollectMissingRequiredInputs returns every required input absent from the
+// parsed command. ExplicitFlags is authoritative for flags because effective
+// values may contain Cobra defaults that the caller never supplied.
+func CollectMissingRequiredInputs(parsed *frameworkrouter.ParsedCommand) MissingRequiredInputs {
+	var missing MissingRequiredInputs
+	if parsed == nil || parsed.Node == nil {
+		return missing
+	}
+
+	flags := append(append([]registry.FlagDef(nil), parsed.Node.Flags...), parsed.Node.InheritedFlags()...)
+	for _, flag := range flags {
+		if !flag.Required {
+			continue
+		}
+		if _, ok := parsed.ExplicitFlags[flag.Name]; !ok {
+			missing.Flags = append(missing.Flags, flag.Name)
+		}
+	}
+	for index, arg := range parsed.Node.Args {
+		if arg.Required && index >= len(parsed.Args) {
+			missing.Args = append(missing.Args, arg.Name)
+		}
+	}
+	return missing
+}
+
 func (s *ParamValidateStep) Execute(ctx context.Context, state *PipelineContext) error {
 	_ = ctx
 	if state == nil || state.Parsed == nil || state.Parsed.Node == nil {
 		return frameworkerrors.New(frameworkerrors.CategoryInternal, frameworkerrors.CodeInternal, "parsed command is required")
 	}
 	node := state.Parsed.Node
+	missing := CollectMissingRequiredInputs(state.Parsed)
+	if missing.Len() > 0 {
+		return frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamRequired, formatMissingRequiredInputs(missing))
+	}
 	flags := append(node.InheritedFlags(), node.Flags...)
 	for _, flag := range flags {
-		if flag.Required {
-			// Requiredness is about whether the caller supplied a value, not
-			// whether the effective flag map contains a Cobra default. ParamMergeStep
-			// promotes --params / --set keys into ExplicitFlags before this runs.
-			if _, ok := state.Parsed.ExplicitFlags[flag.Name]; !ok {
-				return frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamRequired, fmt.Sprintf("missing required parameter --%s", flag.Name))
-			}
-		}
 		if len(flag.Enum) > 0 {
 			if value, ok := state.Parsed.Flags[flag.Name]; ok && !containsEnum(flag.Enum, fmt.Sprint(value)) {
 				return frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamInvalid, fmt.Sprintf("invalid value for --%s", flag.Name))
 			}
 		}
 	}
-	for index, arg := range node.Args {
-		if !arg.Required {
-			continue
-		}
-		if index >= len(state.Parsed.Args) {
-			return frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamRequired, fmt.Sprintf("missing required argument <%s>", arg.Name))
-		}
-	}
 	return nil
+}
+
+func formatMissingRequiredInputs(missing MissingRequiredInputs) string {
+	if len(missing.Flags) == 1 && len(missing.Args) == 0 {
+		return fmt.Sprintf("missing required parameter --%s", missing.Flags[0])
+	}
+	if len(missing.Flags) == 0 && len(missing.Args) == 1 {
+		return fmt.Sprintf("missing required argument <%s>", missing.Args[0])
+	}
+
+	inputs := make([]string, 0, missing.Len())
+	for _, name := range missing.Flags {
+		inputs = append(inputs, "--"+name)
+	}
+	for _, name := range missing.Args {
+		inputs = append(inputs, "<"+name+">")
+	}
+	switch {
+	case len(missing.Args) == 0:
+		return "missing required parameters: " + strings.Join(inputs, ", ")
+	case len(missing.Flags) == 0:
+		return "missing required arguments: " + strings.Join(inputs, ", ")
+	default:
+		return "missing required inputs: " + strings.Join(inputs, ", ")
+	}
 }
 
 type ExecutorStep struct {

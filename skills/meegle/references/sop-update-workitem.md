@@ -36,24 +36,17 @@
 
 > 🚨 **关键约定**：`field_value` 协议层是 **STRING**。标量直接字符串化；数组/对象**必须 JSON.stringify**，否则报 `need STRING type, but got: LIST`。
 
-| field_type | 转换规则 & field_value 传参 |
+| field_type | 更新场景差异化提示 |
 |---|---|
-| `text` / `number` / `bool` / `link` | 直接字符串，如 `"100"` / `"true"` |
-| `user` | 姓名 → `user search` → 单个 userkey 字符串。多人同名时：用户说"分配给我自己"用 `current_login_user()`，否则**必须确认** |
-| `multi-user` | 批量转换为 userkey，**stringified** 如 `"[\"key1\",\"key2\"]"` |
-| `select` / `radio` / `tree-select` | option_name 匹配 → `"option_id"` 纯字符串 |
-| `multi-select` | **stringified** 如 `"[{\"option_id\":\"xxx\"}]"` |
-| `tree-multi-select` | **stringified 字符串一维数组** `"[\"id1\",\"id2\"]"`（禁对象数组） |
-| `multi-text` | Markdown 字符串 |
-| `date` | 毫秒时间戳字符串，如 `"1722182400000"` |
-| `schedule` | **stringified** `"[开始ms,结束ms]"` |
-| `precise_date` | **stringified** `"{\"start_time\":...,\"end_time\":...}"` |
-| `signal` | `"true"` / `"false"` / `"null"` |
-| `workitem_related_select` | 工作项 ID 字符串（数字或字符串按空间配置） |
+| `user` | 姓名 → `user search` → 单个 userkey 字符串；多人同名时用户说"分配给我自己"用 `current_login_user()`，否则**必须确认** |
+| `signal` | `option_id` 字符串（以 `workitem meta-fields` 的 `options[].option_id` 为准；不接受 `"true"`/`"false"`/`"null"`） |
 | `workitem_related_multi_select` | **stringified** ID 数组，**禁止写入自身 ID**（防循环引用，触发 `exists loop` 报错） |
-| `file` / `multi-file` | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-id <id> --field-key <field_key> <local-path>` 拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
+| `group_type` | 拉群方式为逻辑字段，读返回判别键 `value`，写协议判别键 `type`（`auto`/`bind`/`disabled`），**读写不对称** |
+| `file` / `multi-file` | 先调 `attachment +upload`，传 `--resource-type=15`、`--project-key`、`--work-item-id`、`--field-key` 和本地文件路径拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"` |
 
-> **用户提供的是工作项名称而非 ID** 时，按主文档 [SKILL.md](../SKILL.md)「关联工作项名称 → ID 转换」完整流程（获取目标约束 → `workitem query` 搜索 → 消歧 → 按类型写入）处理。
+> 其余通用字段类型（text / number / bool / multi-user / date / schedule / precise_date / select 系列 / multi-text 等）写入格式详见主文档 [SKILL.md](../SKILL.md)「字段值格式」章节。
+
+> **用户提供的是工作项名称而非 ID** 时，按 [field-value-extras.md](field-value-extras.md)「关联工作项名称 → ID 转换」完整流程（获取目标约束 → `workitem query` 搜索 → 消歧 → 按类型写入）处理。
 
 ### STEP 4 — 执行更新
 
@@ -148,13 +141,13 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 | `vote-option` / `vote-option-multi`（投票） | 不支持接口伪造 |
 | 计算字段 | 系统自动计算，只读 |
 
-> **复合明细表已支持通过 `workitem update` 写入**，但两类协议不同：`compound_field` 使用 stringified action 对象并以 `group_uuid` 定位行；`multi_user_compound_field` 使用 stringified userkey map，且是整体覆盖。更新多人复合字段前必须先读当前值并保留全部人员和非目标数据；该协议只更新当前 map 中已有人员，空值或目标人员不在 map 时不能自动新增人员，必须停止并请用户先通过页面配置人员范围。格式详见主文档 [SKILL.md](../SKILL.md)「字段值格式 → 复合明细表」章节。
+> **复合明细表已支持通过 `workitem update` 写入**，但两类协议不同：`compound_field` 使用 stringified action 对象并以 `group_uuid` 定位行；`multi_user_compound_field` 使用 stringified userkey map，且是整体覆盖。更新多人复合字段前必须先读当前值并保留全部人员和非目标数据；该协议只更新当前 map 中已有人员，空值或目标人员不在 map 时不能自动新增人员，必须停止并由用户先通过页面配置人员范围。格式详见主文档 [SKILL.md](../SKILL.md)「字段值格式 → 复合明细表」章节。
 
 **富文本与关联字段**：
 - **富文本/多行文本** → 直接传 Markdown 字符串
 - **关联云文档** → URL 数组 `["https://xxx.feishu.cn/docx/xxx"]`
-- **前置依赖/关联工作项** → 工作项 ID，不同空间可能要求字符串或数字格式，遇类型校验失败立刻切换；用户给的是名称而非 ID 时，按主文档 [SKILL.md](../SKILL.md)「关联工作项名称 → ID 转换」完整流程处理
-- **signal 类型** → 纯字符串 `"true"`/`"false"`/`"null"`
+- **前置依赖/关联工作项** → 工作项 ID，不同空间可能要求字符串或数字格式，遇类型校验失败立刻切换；用户给的是名称而非 ID 时，按 [field-value-extras.md](field-value-extras.md)「关联工作项名称 → ID 转换」完整流程处理
+- **signal 类型** → `option_id` 字符串（以 `workitem meta-fields` 的 `options[].option_id` 为准）
 - **级联选项 (tree-select)** → 只传 `option_id` 纯字符串；报 `不满足层级配置` 时查 `children` 树找末级叶子节点，**展示给用户选择**
 - **循环引用保护** → 关联字段写入前**必须排查当前工作项自身 ID**，禁止将自身 ID 写入关联项，否则触发 `exists loop`（循环引用）报错
 
@@ -162,7 +155,7 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 
 ## 错误自动恢复（自愈机制）
 
-> 通用自愈规则（格式错误、级联层级、枚举不合法）见主文档 [SKILL.md](../SKILL.md)「通用自愈规则」。以下为本 Skill 补充规则：
+> 通用自愈规则（格式错误、级联层级、枚举不合法）见 [error-handling.md](error-handling.md)。以下为本 SOP 补充规则：
 
 | 报错特征 | 自愈动作 |
 |---------|---------|
@@ -174,7 +167,7 @@ meegle workitem update --work-item-id 工作项ID --project-key 空间key --role
 
 ## 熔断机制 (Circuit Breaker)
 
-> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「通用熔断规则」。以下为本 Skill 补充规则：
+> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「错误处理」。以下为本 SOP 补充规则：
 
 1. **工作项类型未找到**：`workitem meta-types` 失败超过 3 次
 2. **字段转换大面积失败**：转换失败比例 > 60%，终止并列出失败字段明细

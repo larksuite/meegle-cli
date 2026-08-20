@@ -72,12 +72,24 @@ func (c CompositeFormatter) Format(data any, opts *frameworkoutput.FormatOptions
 func (c CompositeFormatter) formatErrorEnvelope(data any, mode string, opts *frameworkoutput.FormatOptions) ([]byte, error) {
 	switch mode {
 	case "table":
-		if env, ok := data.(map[string]any); ok {
-			if errRec, ok := env["error"].(map[string]any); ok {
-				return c.Table.Encode(errRec, opts)
+		table := c.Table
+		if table.MaxColumns == 0 {
+			stderr := table.Stderr
+			table = DefaultTableView()
+			if stderr != nil {
+				table.Stderr = stderr
 			}
 		}
-		return c.Table.Encode(data, opts)
+		// Error messages and suggestions are actionable data. Truncating them
+		// can hide required parameters or recovery commands, so error-envelope
+		// tables deliberately disable the normal data-cell width limit.
+		table.MaxCellWidth = 0
+		if env, ok := data.(map[string]any); ok {
+			if errRec, ok := env["error"].(map[string]any); ok {
+				return table.Encode(errRec, opts)
+			}
+		}
+		return table.Encode(data, opts)
 	case "", "json", "ndjson":
 		return c.Base.Format(data, opts)
 	default:

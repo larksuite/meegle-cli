@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	frameworkerrors "github.com/larksuite/meegle-cli/pkg/framework/errors"
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 	frameworkrouter "github.com/larksuite/meegle-cli/pkg/framework/router"
@@ -67,6 +68,53 @@ func TestPipelineStepsMergeValidateAndDispatch(t *testing.T) {
 	}
 	if _, exists := data["format"]; exists {
 		t.Fatalf("builtin format flag should not be dispatched: %#v", data)
+	}
+}
+
+func TestParamValidateStepAggregatesMissingRequiredInputs(t *testing.T) {
+	parsed := &frameworkrouter.ParsedCommand{
+		Node: &registry.CommandNode{
+			Flags: []registry.FlagDef{
+				{Name: "project-key", Required: true},
+				{Name: "work-item-type", Required: true},
+				{Name: "user-key", Required: true},
+			},
+			Args: []registry.ArgDef{
+				{Name: "source", Required: true},
+				{Name: "destination", Required: true},
+			},
+		},
+		ExplicitFlags: map[string]any{"project-key": "demo"},
+		Args:          []string{"input.json"},
+	}
+
+	err := (&ParamValidateStep{}).Execute(context.Background(), &PipelineContext{Parsed: parsed})
+	if err == nil {
+		t.Fatal("expected missing required input error")
+	}
+	if got, want := err.Error(), "missing required inputs: --work-item-type, --user-key, <destination>"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	cliErr := frameworkerrors.As(err)
+	if cliErr == nil || cliErr.Code != frameworkerrors.CodeParamRequired {
+		t.Fatalf("error = %#v, want %s", err, frameworkerrors.CodeParamRequired)
+	}
+	if cliErr.ExitCode() != 1 || cliErr.IsRetryable() {
+		t.Fatalf("exit/retryable = %d/%v, want 1/false", cliErr.ExitCode(), cliErr.IsRetryable())
+	}
+}
+
+func TestParamValidateStepPreservesSingleMissingMessage(t *testing.T) {
+	parsed := &frameworkrouter.ParsedCommand{
+		Node: &registry.CommandNode{Flags: []registry.FlagDef{{Name: "project-key", Required: true}}},
+	}
+
+	err := (&ParamValidateStep{}).Execute(context.Background(), &PipelineContext{Parsed: parsed})
+	if err == nil {
+		t.Fatal("expected missing required parameter error")
+	}
+	if got, want := err.Error(), "missing required parameter --project-key"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
