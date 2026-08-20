@@ -510,6 +510,14 @@ meegle user search --user-keys "张三,李四" --project-key PROJ
 meegle workitem get --work-item-id 12345 --project-key PROJ
 ```
 
+一次调用如果缺少多个必填 flag 或位置参数，CLI 会按命令定义顺序在同一个
+`CLIENT_MISSING_REQUIRED` 错误中列出全部缺失项；只缺一个输入时仍保留原有单数文案。
+
+```text
+$ meegle workflow list-state-transitions --project-key demo --work-item-id 1 --dry-run
+missing required parameters: --user-key, --work-item-type
+```
+
 ### --set key=value（通用）
 
 `--set` 是普通 flag 的**替代写法**，只影响**顶层参数**：`--set key=value` 等价于 `--key value`。适合在脚本里用统一的 key=value 语法，或通过 dot-path 写嵌套顶层对象。值自动类型推断（int / float / bool / string）。

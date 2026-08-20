@@ -5,10 +5,12 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	meegle "github.com/larksuite/meegle-cli/internal/products/meegle"
+	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
@@ -19,13 +21,25 @@ import (
 type stubRegistrySetup struct{}
 
 func (s *stubRegistrySetup) Setup(ctx context.Context) (*registry.CommandTree, error) {
-	tools := []types.ToolDefinition{{
-		Name:        "get_workitem_brief",
-		Description: "Get work item brief",
-		Parameters: []types.ToolParameter{
-			{Name: "work_item_id", Type: "number", Required: true, Description: "Work item ID"},
+	tools := []types.ToolDefinition{
+		{
+			Name:        "get_workitem_brief",
+			Description: "Get work item brief",
+			Parameters: []types.ToolParameter{
+				{Name: "work_item_id", Type: "number", Required: true, Description: "Work item ID"},
+			},
 		},
-	}}
+		{
+			Name:        "get_transitable_states",
+			Description: "List state transitions",
+			Parameters: []types.ToolParameter{
+				{Name: "user_key", Type: "string", Required: true},
+				{Name: "project_key", Type: "string", Required: true},
+				{Name: "work_item_id", Type: "number", Required: true},
+				{Name: "work_item_type", Type: "string", Required: true},
+			},
+		},
+	}
 	commands := meegle.ExportMapToolsForTest(tools)
 	tree := meegle.ExportBuildCommandTreeForTest(commands)
 	return tree, nil
@@ -97,6 +111,43 @@ func TestExecuteCommand_EmptyCommand(t *testing.T) {
 	_, err := ExecuteCommand(context.Background(), "example.com", "", WithToken("test"))
 	if err == nil {
 		t.Fatal("expected error for empty command")
+	}
+}
+
+func TestExecuteCommand_AggregatesMissingRequiredFlags(t *testing.T) {
+	c, err := newTestCommandClient()
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	_, err = c.Execute(context.Background(), "meegle workflow list-state-transitions --project-key demo --work-item-id 1 --dry-run")
+	if err == nil {
+		t.Fatal("expected missing required flags error")
+	}
+	var me *meerrors.MeegleError
+	if !errors.As(err, &me) {
+		t.Fatalf("error = %T, want *MeegleError", err)
+	}
+	if got, want := me.Message, "missing required parameters: --user-key, --work-item-type"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+	if me.Code != "CLIENT_MISSING_REQUIRED" || me.ExitCode != 1 {
+		t.Fatalf("code/exit = %s/%d, want CLIENT_MISSING_REQUIRED/1", me.Code, me.ExitCode)
+	}
+}
+
+func TestExecuteCommand_AcceptsRequiredInputsFromDirectParamsAndSet(t *testing.T) {
+	c, err := newTestCommandClient()
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	out, err := c.Execute(context.Background(), `meegle workflow list-state-transitions --project-key demo --work-item-id 1 --params "{\"work_item_type\":\"story\"}" --set user_key=user-1 --dry-run`)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, fragment := range []string{`"project_key": "demo"`, `"work_item_type": "story"`, `"user_key": "user-1"`} {
+		if !strings.Contains(string(out), fragment) {
+			t.Fatalf("output missing %q:\n%s", fragment, out)
+		}
 	}
 }
 

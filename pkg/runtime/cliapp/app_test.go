@@ -107,6 +107,81 @@ func TestAppInvokeStillRejectsMissingRequiredFlag(t *testing.T) {
 	}
 }
 
+func TestAppInvokeAggregatesMissingRequiredFlags(t *testing.T) {
+	called := false
+	app, err := newRequiredValidationTestApp(&called)
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+
+	_, err = app.Invoke(context.Background(), []string{
+		"workflow", "list-state-transitions",
+		"--project-key", "demo",
+		"--work-item-id", "1",
+		"--dry-run",
+	})
+	if err == nil {
+		t.Fatal("expected missing required flags error")
+	}
+	if got, want := err.Error(), "missing required parameters: --user-key, --work-item-type"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	cliErr := frameworkerrors.As(err)
+	if cliErr == nil || cliErr.Code != frameworkerrors.CodeParamRequired {
+		t.Fatalf("error = %v, want %s", err, frameworkerrors.CodeParamRequired)
+	}
+	if called {
+		t.Fatal("executor must not run when required flags are missing")
+	}
+}
+
+func TestAppParseArgsToRequestAggregatesMissingRequiredFlags(t *testing.T) {
+	app, err := newRequiredValidationTestApp(nil)
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+
+	_, err = app.ParseArgsToRequest(context.Background(), []string{
+		"workflow", "list-state-transitions",
+		"--project-key", "demo",
+		"--work-item-id", "1",
+	})
+	if err == nil {
+		t.Fatal("expected missing required flags error")
+	}
+	if got, want := err.Error(), "missing required parameters: --user-key, --work-item-type"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestAppParseArgsToRequestAcceptsRequiredFlagsFromDirectParamsAndSet(t *testing.T) {
+	app, err := newRequiredValidationTestApp(nil)
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+
+	req, err := app.ParseArgsToRequest(context.Background(), []string{
+		"workflow", "list-state-transitions",
+		"--project-key", "demo",
+		"--work-item-id", "1",
+		"--params", `{"work-item-type":"story"}`,
+		"--set", "user-key=user-1",
+	})
+	if err != nil {
+		t.Fatalf("parse args to request: %v", err)
+	}
+	for key, want := range map[string]any{
+		"project-key":    "demo",
+		"work-item-id":   "1",
+		"work-item-type": "story",
+		"user-key":       "user-1",
+	} {
+		if got := req.Input[key]; got != want {
+			t.Fatalf("input[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
 func TestAppExecuteWithIOVersion(t *testing.T) {
 	app, err := newTestApp()
 	if err != nil {
@@ -341,6 +416,38 @@ func newTestAppWithHandler(handler executor.Handler) (*App, error) {
 		WithSetup(registry.NewStaticSetup(tree)),
 		WithExecutor(executor.NewDirectExecutor(map[string]executor.Handler{
 			"test.workitem.create": handler,
+		})),
+	)
+}
+
+func newRequiredValidationTestApp(called *bool) (*App, error) {
+	tree := &registry.CommandTree{Nodes: []*registry.CommandNode{{
+		Name: "workflow",
+		Help: registry.HelpText{Brief: "Manage workflows"},
+		Children: []*registry.CommandNode{{
+			Name:       "list-state-transitions",
+			Help:       registry.HelpText{Brief: "List state transitions"},
+			HandlerRef: "test.workflow.list-state-transitions",
+			Flags: []registry.FlagDef{
+				{Name: "user-key", Type: registry.FlagTypeString, Required: true},
+				{Name: "project-key", Type: registry.FlagTypeString, Required: true},
+				{Name: "work-item-id", Type: registry.FlagTypeString, Required: true},
+				{Name: "work-item-type", Type: registry.FlagTypeString, Required: true},
+			},
+		}},
+	}}}
+	return New(
+		WithAppName("meegle"),
+		WithVersion("test-version"),
+		WithSetup(registry.NewStaticSetup(tree)),
+		WithExecutor(executor.NewDirectExecutor(map[string]executor.Handler{
+			"test.workflow.list-state-transitions": func(ctx context.Context, req *executor.Request) (*executor.RawResult, error) {
+				_, _ = ctx, req
+				if called != nil {
+					*called = true
+				}
+				return &executor.RawResult{Data: req.Values}, nil
+			},
 		})),
 	)
 }

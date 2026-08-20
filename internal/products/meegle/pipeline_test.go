@@ -358,6 +358,90 @@ func TestMeegleValidateStep_RejectsMissingRequired(t *testing.T) {
 	}
 }
 
+func TestMeegleValidateStep_AggregatesMissingRequired(t *testing.T) {
+	step := &MeegleValidateStep{}
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				Flags: []registry.FlagDef{
+					{Name: "project-key", Required: true},
+					{Name: "work-item-id", Required: true},
+					{Name: "work-item-type", Required: true},
+					{Name: "user-key", Required: true},
+				},
+			},
+			Flags: map[string]any{
+				"project-key":  "demo",
+				"work-item-id": "1",
+			},
+			ExplicitFlags: map[string]any{
+				"project-key":  "demo",
+				"work-item-id": "1",
+			},
+		},
+	}
+
+	err := step.Execute(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected missing required parameters error")
+	}
+	var me *meerrors.MeegleError
+	if !errors.As(err, &me) {
+		t.Fatalf("error = %T, want *MeegleError", err)
+	}
+	if got, want := me.Message, "missing required parameters: --work-item-type, --user-key"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+	if me.Code != "CLIENT_MISSING_REQUIRED" || me.ExitCode != 1 {
+		t.Fatalf("code/exit = %s/%d, want CLIENT_MISSING_REQUIRED/1", me.Code, me.ExitCode)
+	}
+	if retryable, _ := me.ErrorPayload()["retryable"].(bool); retryable {
+		t.Fatal("missing required parameters must not be retryable")
+	}
+}
+
+func TestMeegleValidateStep_AggregatesThreeMissingFlagsInDefinitionOrder(t *testing.T) {
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{Flags: []registry.FlagDef{
+				{Name: "project-key", Required: true},
+				{Name: "work-item-id", Required: true},
+				{Name: "work-item-type", Required: true},
+				{Name: "user-key", Required: true},
+			}},
+			ExplicitFlags: map[string]any{"project-key": "demo"},
+		},
+	}
+
+	err := (&MeegleValidateStep{}).Execute(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected missing required parameters error")
+	}
+	if got, want := err.Error(), "missing required parameters: --work-item-id, --work-item-type, --user-key"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestMeegleValidateStep_AggregatesFlagsAndArguments(t *testing.T) {
+	state := &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				Flags: []registry.FlagDef{{Name: "project-key", Required: true}},
+				Args:  []registry.ArgDef{{Name: "source", Required: true}, {Name: "destination", Required: true}},
+			},
+			Args: []string{"input.json"},
+		},
+	}
+
+	err := (&MeegleValidateStep{}).Execute(context.Background(), state)
+	if err == nil {
+		t.Fatal("expected missing required inputs error")
+	}
+	if got, want := err.Error(), "missing required inputs: --project-key, <destination>"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
 func TestMeegleValidateStep_PassesWhenPresent(t *testing.T) {
 	step := &MeegleValidateStep{}
 	state := &pipeline.PipelineContext{

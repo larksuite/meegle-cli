@@ -519,6 +519,16 @@ Each command takes parameters via `--flag-name`:
 meegle workitem get --work-item-id 12345 --project-key PROJ
 ```
 
+If one invocation omits multiple required flags or positional arguments, the
+CLI reports every missing input in a single `CLIENT_MISSING_REQUIRED` error,
+in the same order as the command definition. A single missing input keeps the
+original singular message.
+
+```text
+$ meegle workflow list-state-transitions --project-key demo --work-item-id 1 --dry-run
+missing required parameters: --user-key, --work-item-type
+```
+
 ### --set key=value (Generic)
 
 `--set` is an alternate syntax for writing **top-level** parameters — `--set key=value` is equivalent to typing `--key value`. Useful when scripting with a uniform `key=value` form, or for writing nested top-level params via dot-path. Values are auto-typed (int / float / bool / string).

@@ -47,6 +47,7 @@ func newSDKPipelineFactory(cfg *ClientConfig, setup *meegle.DynamicRegistrySetup
 		return &pipeline.Pipeline{Steps: []pipeline.PipelineStep{
 			&sdkInjectStep{cfg: cfg},
 			&pipeline.ParamMergeStep{},
+			&meegle.StructuredFlagNameNormalizeStep{},
 			&meegle.MeegleValidateStep{},
 			&meegle.SessionStep{},
 			&meegle.McpExecutorStep{CommandsFunc: commandsFunc},

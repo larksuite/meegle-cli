@@ -4,13 +4,13 @@
 
 本技能用于在飞书项目中流转节点流工作项的节点（confirm/rollback），全程自动化执行。
 
-> **注意**：此技能仅用于**节点流**工作项（如需求），不适用于状态流工作项（如缺陷）。状态流转请参考主文档 [SKILL.md](../SKILL.md) 的 `workflow transition-state`。
+> **注意**：此技能仅用于**节点流**工作项（如需求），不适用于状态流工作项（如缺陷）。状态流转参见主文档 [SKILL.md](../SKILL.md) 的 `workflow transition-state`。
 
 ---
 
 ## 核心设计原则：最小查询 + 按需补充
 
-`workflow transition` 工具**只接受 node_key（节点 ID），不支持传节点名称**。因此必须先通过 `workflow get-node` 获取名称→node_key 映射。但查询应尽可能精准轻量：
+`workflow transition` 工具**只接受 node_key（节点 ID），不支持传节点名称**。因此必须先通过 `workflow get-node` 获取名称→node_key 映射。但查询应保持精准轻量：
 
 - **用户指定了节点名** → `node_id_list` 直接传中文名称 `["节点名"]`，精准查单个节点
 - **用户说"所有节点"** → 传 `["_all"]` 查全量，但**不传 `field_key_list`**（不查表单字段）
@@ -62,7 +62,7 @@
 ### STEP 3 — 直接尝试流转
 
 ```bash
-meegle workflow transition --work-item-id 工作项ID --node-ids '{{node_ids}}' --project-key 空间key --node-id 节点node_key --action confirm --rollback-reason '{{rollback_reason}}' --format json
+meegle workflow transition --work-item-id 工作项ID --project-key 空间key --node-id 节点node_key --action confirm --rollback-reason '{{rollback_reason}}' --format json
 ```
 
 **三种结果分支：**
@@ -149,30 +149,19 @@ meegle workflow update-node --work-item-id 工作项ID --node-schedule '{{node_s
 
 **通用字段类型转换**（完整格式见主文档 [SKILL.md](../SKILL.md)「字段值格式」）：
 
-> 🚨 **关键约定**：表单字段 `field_value` 协议层是 **STRING**。标量直接传字符串；数组/对象**必须 JSON.stringify**，否则报 `need STRING type, but got: LIST`。（上方「节点专属字段」走 `workflow.update-node` 的专用参数，不受此约定影响。）
+> 🚨 **关键约定**：表单字段 `field_value` 协议层是 **STRING**。标量直接传字符串；数组/对象**必须 JSON.stringify**，否则报 `need STRING type, but got: LIST`。（上方「节点专属字段」走 `workflow update-node` 的专用参数，不受此约定影响。）
 
-| field_type | field_value 传参 |
+| field_type | 节点流转场景差异化提示 |
 |---|---|
-| `text` / `multi-pure-text` | 字符串直接传入 |
-| `number` | 数字字符串，如 `"100"` |
-| `bool` | `"true"` 或 `"false"` |
-| `user` | 单个 userkey 字符串 |
-| `multi-user` | **stringified** `"[\"key1\",\"key2\"]"` |
-| `select` / `radio` | option_name 匹配 → `"option_id"` 字符串 |
-| `multi-select` | **stringified** `"[{\"option_id\":\"xxx\"}]"` |
-| `tree-select` | 只传 `"option_id"` 纯字符串，不传复杂 JSON |
-| `tree-multi-select` | **stringified 字符串一维数组** `"[\"id1\",\"id2\"]"` |
-| `multi-text` | Markdown 格式字符串 |
-| `date` | 毫秒时间戳字符串，如 `"1722182400000"` |
-| `schedule`（表单字段） | **stringified** `"[开始ms,结束ms]"` |
-| `file` / `multi-file` | 先 `meegle attachment +upload --resource-type 15 --project-key <K> --work-item-id <id> --field-key <field_key> <local-path>` 拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"`（`fileToken` 驼峰、`size` 字符串） |
-| `precise_date` | **stringified** `"{\"start_time\":ms,\"end_time\":ms}"` |
-| `telephone` / `email` | 字符串直接传入 |
-| `signal` | `"true"` / `"false"` / `"null"` |
-| `workitem_related_select` | 工作项 ID 字符串（数字或字符串按空间配置） |
+| `schedule`（表单字段） | **stringified** `"[开始ms,结束ms]"`；**节点专属排期不走本表**，用 `workflow update-node` 的 `node_schedule` 参数 |
+| `signal` | `option_id` 字符串（以 `workitem meta-fields` 的 `options[].option_id` 为准；不接受 `"true"`/`"false"`/`"null"`） |
 | `workitem_related_multi_select` | **stringified** ID 数组，**禁止写入自身 ID**（防循环引用，触发 `exists loop` 报错） |
+| `tree-select` | 只传 `"option_id"` 纯字符串，不传 value/label/children 复杂 JSON |
+| `file` / `multi-file` | 先调 `attachment +upload`，传 `--resource-type=15`、`--project-key`、`--work-item-id`、`--field-key` 和本地文件路径拿 `file_token`，再 **stringify** 数组 `"[{\"name\":\"a.pdf\",\"type\":\"application/pdf\",\"size\":\"12345\",\"fileToken\":\"<token>\"}]"` |
 
-> **用户提供的是工作项名称而非 ID** 时，按主文档 [SKILL.md](../SKILL.md)「关联工作项名称 → ID 转换」完整流程（获取目标约束 → `workitem query` 搜索 → 消歧 → 按类型写入）处理。
+> 其余通用字段类型（text / number / bool / user / multi-user / date / precise_date / select 系列 / multi-text / telephone / email / workitem_related_select 等）写入格式详见主文档 [SKILL.md](../SKILL.md)「字段值格式」章节。
+
+> **用户提供的是工作项名称而非 ID** 时，按 [field-value-extras.md](field-value-extras.md)「关联工作项名称 → ID 转换」完整流程（获取目标约束 → `workitem query` 搜索 → 消歧 → 按类型写入）处理。
 
 **节点字段 vs 工作项字段**：
 - `form_item_type = "node_field"` → `workflow update-node`，传 `node_id` + `fields`
@@ -181,7 +170,7 @@ meegle workflow update-node --work-item-id 工作项ID --node-schedule '{{node_s
 
 **4.5 字段补充执行策略**
 
-🚨 **效率要求**：一轮对话内并行完成所有必填字段补充。
+🚨 **效率要求**：并行完成所有必填字段补充，禁止逐个串行。
 
 1. **分类**：节点负责人（owner）→ `node_owners`；排期/估分 → `node_schedule`；其他字段 → `fields` 或 `workitem update`
 2. **节点负责人和排期/估分不可同时更新**，需分两次调用 `workflow update-node`
@@ -224,7 +213,7 @@ meegle workflow update-node --work-item-id 工作项ID --node-schedule '{{node_s
 
 ## 错误自动恢复（自愈机制）
 
-> 通用自愈规则（格式错误、级联层级、枚举不合法）见主文档 [SKILL.md](../SKILL.md)「通用自愈规则」。以下为本 Skill 补充规则：
+> 通用自愈规则（格式错误、级联层级、枚举不合法）见 [error-handling.md](error-handling.md)。以下为本 SOP 补充规则：
 
 | 报错特征 | 自愈动作 |
 |---------|---------|
@@ -235,7 +224,7 @@ meegle workflow update-node --work-item-id 工作项ID --node-schedule '{{node_s
 
 ## 熔断机制 (Circuit Breaker)
 
-> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「通用熔断规则」。以下为本 Skill 补充规则：
+> 通用熔断规则（空间未找到、权限不足）见主文档 [SKILL.md](../SKILL.md)「错误处理」。以下为本 SOP 补充规则：
 
 1. **必填字段全部为硬拦截类型**：当前节点所有未完成必填字段都属于不可写类型
 2. **连续流转失败**：同一节点重试 2 次仍然失败

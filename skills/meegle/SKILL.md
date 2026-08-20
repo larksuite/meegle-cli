@@ -38,33 +38,31 @@ description: |
 | --work-item-type | string | 是 | 工作项类型 |
 | --project-key | string | 否 | 空间标识 |
 | --fields | array | 否 | 字段值列表，每项含 field_key 和 field_value |
-| --work-item-id | string | 否 | 工作项资源库模板实例 ID；通过资源工作项创建普通工作项时必填 |
-| --ignore-required | boolean | 否 | 是否忽略字段必填校验；默认 false，谨慎使用 |
-| --ignore-role-calculate | boolean | 否 | 是否忽略角色计算；默认 false，谨慎使用 |
 
 ### workitem get
-按 ID/名称查询工作项概况。不传 fields 时返回固定基础字段加上一组默认带出的系统字段——实测包含 `group_type` 拉群方式、`description`、`current_status_operator`、`watchers`（即便 value 为 null 也会出现）；其余字段需要通过 `workitem meta-fields` 拿到 key 后再传入 fields。
+按 ID/名称查询工作项概况。不传 fields 时返回固定基础字段加上一组默认系统字段：`group_type`（拉群方式）、`description`、`current_status_operator`、`watchers`（value 为 null 时也会出现）；其余字段需先通过 `workitem meta-fields` 拿到 key 再传入 fields。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| --work-item-id | string | 是 | 工作项 ID 或名称 |
+| --work-item-id | string | 否 | 工作项 ID（与 `--name` 二选一） |
+| --name | string | 否 | 按名称查询工作项（与 `--work-item-id` 二选一） |
 | --project-key | string | 否 | 空间 key |
 | --fields | array | 否 | 要查询的 field_key 或 field_name；传 `["_all"]` 时按逻辑字段分页返回全部字段；传 `["group_type"]` 时只取拉群方式 |
-| --page-size | number | 否 | 仅 `fields=["_all"]` 时生效；每页字段数量，默认 100，最大 200。**meegle CLI 注意**：直接传 `--page-size N` 会被序列化成字符串触发后端 `need I64 type, but got: STRING`；当前只能走 `--params '{"page_size":N}'` 让它以数字传出 |
-| --page-token | string | 否 | 仅 `fields=["_all"]` 时生效；翻页 token，首次不传，下一页传上次响应的 `next_page_token`（token 形如字段 key，例如 `"business"`）；同上，meegle CLI 当前需要走 `--params '{"page_token":"..."}'` |
+| --page-size | number | 否 | 仅 `fields=["_all"]` 时生效；每页字段数量，默认 100，最大 200。**Meegle CLI 序列化约束**：`--page-size N` 会被序列化为字符串触发后端 `need I64 type, but got: STRING`；必须走 `--params '{"page_size":N}'` 以数字传出 |
+| --page-token | string | 否 | 仅 `fields=["_all"]` 时生效；翻页 token，首次不传，下一页传上一页响应的 `next_page_token`（token 形如字段 key，例如 `"business"`）；同上，须走 `--params '{"page_token":"..."}'` |
 
 > **逻辑字段聚合（重要心智模型）**：服务端把 `group_id` / `chat_group` 这类"拉群"相关的物理字段**合并**到一个逻辑字段 `group_type`。读取/更新统一走 `group_type`，**不要再单独读取 `group_id` 或 `chat_group`**。
 >
-> ⚠️ **读写协议不对称**：读返回结构里**判别键是 `value`**（不是 `type`），更新时**判别键是 `type`**——别照着读到的结构直接回写。
+> ⚠️ **读写协议不对称**：读返回结构里**判别键是 `value`**（不是 `type`），更新时**判别键是 `type`**——禁止照着读到的结构直接回写。
 >
 > 读返回（`workitem_fields[].value` 字段）的形状：
-> - `auto` → `{value: "auto", label: "自动拉群", group_id: "oc_xxx"}`（自动拉群通常有 group_id；状态切换时 oc_id 可能会变）
+> - `auto` → `{value: "auto", label: "自动拉群", group_id: "oc_xxx"}`（自动拉群附带 group_id；状态切换时 oc_id 可能会变）
 > - `bind` → `{value: "bind", label: "绑定现有群", group_id: "oc_xxx"}`
 > - `disabled` → `{value: "disabled", label: "不拉群"}`（无 group_id）
 >
 > 写协议（`field_value` 里的 JSON）：`{"type": "auto" | "bind" | "disabled", "group_id": "oc_xxx"}`
 
-### workitem batch-get
+### workitem +batch-get
 批量查询工作项（Meegle CLI 客户端 fan-out：并发调用 `workitem get`）。单次 ≤ 200 个 ID，3 并发，返回 `{results, errors, summary}`；ID 量大时用 `--format ndjson` 流式输出。
 
 | 参数 | 类型 | 必填 | 说明 |
@@ -75,7 +73,7 @@ description: |
 | --project-key | string | 否 | 空间 key |
 
 ### workitem update
-修改指定实例的字段值或角色。节点字段更新请用 `workflow update-node`。
+修改指定实例的字段值或角色。节点字段更新须用 `workflow update-node`。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -136,7 +134,6 @@ description: |
 | --work-item-id | string | 是 | 工作项 ID |
 | --action | string | 否 | confirm（流转） / rollback（回滚） |
 | --node-id | string | 否 | 节点 ID |
-| --node-ids | array | 否 | 节点名称或节点 ID 列表 |
 | --rollback-reason | string | 否 | 回滚原因，action=rollback 时需填写 |
 | --project-key | string | 否 | 空间 key |
 
@@ -226,7 +223,7 @@ description: |
 ### user me
 查看当前用户信息。无需参数。
 
-> **MQL 中**可直接用 `current_login_user()` 函数，无需提前获取用户信息。如需获取当前用户的 userkey/姓名等详细信息，可用 `user search` 传入 `current_login_user()` 作为参数。
+> **MQL 中**可直接用 `current_login_user()` 函数，无需提前获取用户信息。如需获取当前用户的 userkey/姓名等详细信息，用 `user me`。
 
 ---
 
@@ -316,25 +313,25 @@ description: |
 ## 字段值格式（field_value）
 
 > 🚨 **STRING 协议**：`field_value` 协议层固定为字符串。标量（text/number/bool/option_id/userkey/毫秒）直接作字符串；数组、对象**必须先 JSON.stringify** 再传，直接传会报 `need STRING type, but got: LIST` / `MAP`。
-> 例：multi-user 正确写法为 `"[\"7509072868295085608\"]"`，错误写法为 `["7509072868295085608"]`。
+> 例：multi-user 正确写法为 `"[\"<userkey>\"]"`，错误写法为 `["<userkey>"]`。
 
-| 字段类型 | 语义 | field_value 传参（已按上述约定序列化） |
+| 字段类型 | 语义 | field_value 传参（已按前述规则序列化） |
 |---------|------|------|
-| template | 模板 ID（**创建必填**） | `"145405865"` — 用 `workitem meta-fields(field_keys=["template"])` 获取 |
-| text / multi-pure-text / link / bool / number | 单个字面值 | `"测试工作项"` / `"100"` / `"true"` |
-| user | 单个 userkey | `"7509072868295085608"` |
-| multi-user | userkey 数组（**stringified**） | `"[\"7509072868295085608\",\"7509072868295085609\"]"` |
-| select / radio / tree-select | 枚举项 option_id | `"437794"` |
+| template | 模板 ID（**创建必填**） | `"<template_id>"` — 用 `workitem meta-fields(field_keys=["template"])` 获取 |
+| text / multi-pure-text / link / bool / number | 单个字面值 | `"需求标题"` / `"100"` / `"true"` |
+| user | 单个 userkey | `"<userkey>"` |
+| multi-user | userkey 数组（**stringified**） | `"[\"<userkey1>\",\"<userkey2>\"]"` |
+| select / radio / tree-select | 枚举项 option_id | `"<option_id>"` |
 | multi-select | option_id 对象数组（**stringified**） | `"[{\"option_id\":\"111\"},{\"option_id\":\"222\"}]"` |
 | tree-multi-select | option_id 字符串数组（**stringified**） | `"[\"id1\",\"id2\"]"` |
 | multi-text | 富文本 Markdown 字符串（语法详见 [references/rich-text-editor-markdown-syntax.md](references/rich-text-editor-markdown-syntax.md)） | `"**加粗**内容"` |
 | date | 毫秒时间戳（天精度） | `"1722182400000"` |
 | schedule | `[开始ms, 结束ms]`（**stringified**） | `"[1722182400000,1722355199999]"` |
 | precise_date | 对象（**stringified**） | `"{\"start_time\":1722182400000,\"end_time\":1722355199999}"` |
-| workitem_related_select | 关联工作项 ID | `"145405865"` |
-| workitem_related_multi_select | ID 数组（**stringified**，数字元素） | `"[145405865,145405866]"` |
-| role_owners（仅创建时） | 角色-人员对象数组（**stringified**） | `"[{\"role\":\"RD\",\"owners\":[\"userkey1\"]}]"` |
-| signal | 纯字符串 | `"true"` / `"false"` / `"null"` |
+| workitem_related_select | 关联工作项 ID | `"<work_item_id>"` |
+| workitem_related_multi_select | ID 数组（**stringified**，数字元素） | `"[<id1>,<id2>]"` |
+| role_owners（仅创建时） | 角色-人员对象数组（**stringified**） | `"[{\"role\":\"<role_id>\",\"owners\":[\"<userkey>\"]}]"` |
+| signal | option_id 字符串（**写入值位**；MQL 查询值位为 label，见 [mql-syntax.md §4](references/mql-syntax.md)） | `"<option_id>"`（以 `workitem meta-fields` 的 `options[].option_id` 为准；当前系统外信号常见 4 个 option：`passed` / `notpassed` / `processing` / `noinformationyet`） |
 | compound_field | 普通复合明细表（**stringified** action 对象） | `"{\"action\":\"add\",\"fields\":[[{\"field_key\":\"sub_key1\",\"field_value\":\"v1\"}]]}"` |
 | multi_user_compound_field | 多人复合明细表（**仅更新已有人员**；stringified userkey map，整体覆盖） | `"{\"userkey1\":[{\"field_key\":\"sub_key1\",\"field_value\":\"v1\"}],\"userkey2\":[]}"` |
 
@@ -342,7 +339,7 @@ description: |
 
 ### 普通复合明细表（compound_field）
 
-普通复合明细表通过 `workitem update` 写入时，`field_value` 是 **stringified JSON action 对象**。不要直接传 JSON object；实测会在客户端序列化阶段报 `unsupported type: map[string]interface {}, expected type: STRING`。
+普通复合明细表通过 `workitem update` 写入时，`field_value` 是 **stringified JSON action 对象**。直接传 JSON object 会在客户端序列化阶段报 `unsupported type: map[string]interface {}, expected type: STRING`。
 
 ```json
 {"action": "add", "fields": [[{"field_key": "子字段key", "field_value": "子字段值"}, ...]]}
@@ -380,18 +377,16 @@ description: |
 }
 ```
 
-🚨 **这是整体覆盖，不是增量更新**。实测只传 `userkey1` 会把原有的 `userkey2` 整行删除。更新前必须：
+🚨 **整体覆盖，非增量更新**。仅传部分 userkey 会导致未包含的 userkey 整行被删除。更新前必须：
 
 1. 用 `workitem get` 读取当前多人复合字段；返回 map 的 key 是当前人员范围，每个 value 含 `user`，有值时另含 `child_field_list`
 2. 用 `workitem meta-fields` 读取 `compound_field_info`，确定子字段 key、类型和枚举 option_id
 3. 重建**包含全部现有 userkey** 的 map；非目标人员的子字段值也要保留，只修改目标人员
 4. 将完整 map JSON.stringify 后写回；写后再次读取核对所有人员和目标子字段
 
-此协议只用于修改 `workitem get` 当前 map 中**已经存在的人员**。当前元数据只返回子字段配置；`workitem meta-roles` 也只返回角色字典，二者均不返回 `editable_personnel_range_type`、字段绑定角色、可选人员或新增人员协议。若当前值为空或目标人员不在 map 中，立即停止并说明当前 Skill / CLI 无法自动新增人员；请用户先通过页面把人员加入范围，再重新读取后更新。不要尝试用 `{"userkey":[]}` 新增人员——实测接口会返回成功但回读仍为空。
+此协议只用于修改 `workitem get` 当前 map 中**已经存在的人员**。元数据接口只返回子字段配置；`workitem meta-roles` 只返回角色字典，二者均不返回 `editable_personnel_range_type`、字段绑定角色、可选人员或新增人员协议。若当前值为空或目标人员不在 map 中，立即停止并说明当前 Skill / CLI 无法自动新增人员；由用户先通过页面把人员加入范围，再重新读取后更新。不要尝试用 `{"userkey":[]}` 新增人员——接口会返回成功但回读仍为空。
 
 枚举子字段仍传 option_id；读取返回的 `{label, value}` 不能原样回写，应取其中的 option_id 值。修改接口返回空成功不代表已落值，必须回读；若人员或目标值未变化，按未生效报告，不得宣称成功。
-
-> 版本说明：上述普通复合字段写法已在 meegle CLI 1.0.16 与 1.0.17 实测通过，不设置 1.0.17 最低版本门槛。
 
 ### 关联工作项字段（workitem_related_*）
 
@@ -424,7 +419,7 @@ description: |
 
 2. **参数确认**（禁止猜测）：用探测命令校验空间（`project search`）、类型（`workitem meta-types`）、人员（`user search`）。**探测结果不唯一时必须展示并询问用户**，禁止自行选择；缺失必填合并为一条消息询问。个人待办（`mywork todo`）可跳过；URL 经 `url decode` 拿到 `simple_name` 后仍需 `project search` 转权威 `project_key`（同名空间可能有多个无权限）。
 
-3. **元数据收集**（无需用户参与）：调用 `workitem meta-fields` 获取字段定义（需要特定字段用 `field_keys`，模糊查询用 `field_query`）；涉及角色时并行调 `workitem meta-roles`。关键字段识别：状态字段 type=`_work_item_status`（含「完成/关闭/终止」的值为完成态）、排期字段 type=`schedule`（MQL 用 `__字段名_开始时间` / `__字段名_结束时间`）、优先级字段 key=`priority`。简单直调场景（仅需 project_key + work_item_id，如 `comment add`）可跳过本步。
+3. **元数据收集**（无需用户参与）：调用 `workitem meta-fields` 获取字段定义（需要特定字段用 `field_keys`，模糊查询用 `field_query`）。**必须同时传 `--project-key` 与 `--work-item-type`**；缺一都会拿到错误 / 空 / 跨类型污染的字段配置。涉及角色时并行调 `workitem meta-roles`。关键字段识别：状态字段 type=`_work_item_status`（含「完成/关闭/终止」的值为完成态）、排期字段 type=`schedule`（MQL 用 `__字段名_开始时间` / `__字段名_结束时间`）、优先级字段 key=`priority`。简单直调场景（仅需 project_key + work_item_id，如 `comment add`）可跳过本步。
 
 4. **执行**：调用目标命令，遵循 [references/performance.md](references/performance.md) 的并行/翻页规则。
 

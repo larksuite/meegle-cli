@@ -132,31 +132,10 @@ func (s *MeegleValidateStep) Execute(ctx context.Context, state *pipeline.Pipeli
 	if state.Values == nil {
 		state.Values = pipeline.BuildInputValues(state.Parsed)
 	}
-	for _, flag := range state.Parsed.Node.Flags {
-		if flag.Required {
-			// Cobra defaults are present in Values even when the user did not pass
-			// the flag. ParamMergeStep has already promoted --params keys into
-			// ExplicitFlags, so it is the authoritative requiredness check here.
-			if _, ok := state.Parsed.ExplicitFlags[flag.Name]; !ok {
-				return meerrors.NewClientError("CLIENT_MISSING_REQUIRED",
-					fmt.Sprintf("missing required parameter: --%s", flag.Name)).
-					WithSuggestion(fmt.Sprintf("meegle %s --help", state.Parsed.Node.FullPathString()))
-			}
-		}
-	}
-	// Required positional args (ArgDef.Required) — cobra defaults to
-	// ArbitraryArgs which doesn't enforce arity, so commands using positional
-	// args (e.g. attachment +upload-entire <source-path>) need this check
-	// before the step layer opens files or hits the network.
-	for index, arg := range state.Parsed.Node.Args {
-		if !arg.Required {
-			continue
-		}
-		if index >= len(state.Parsed.Args) {
-			return meerrors.NewClientError("CLIENT_MISSING_REQUIRED",
-				fmt.Sprintf("missing required argument <%s>", arg.Name)).
-				WithSuggestion(fmt.Sprintf("meegle %s --help", state.Parsed.Node.FullPathString()))
-		}
+	missing := pipeline.CollectMissingRequiredInputs(state.Parsed)
+	if missing.Len() > 0 {
+		return meerrors.NewClientError("CLIENT_MISSING_REQUIRED", formatMeegleMissingRequiredInputs(missing)).
+			WithSuggestion(fmt.Sprintf("meegle %s --help", state.Parsed.Node.FullPathString()))
 	}
 	// Enum validation for persistent/inherited flags (e.g. --format).
 	for _, flag := range state.Parsed.Node.InheritedFlags() {
@@ -181,6 +160,31 @@ func (s *MeegleValidateStep) Execute(ctx context.Context, state *pipeline.Pipeli
 		}
 	}
 	return nil
+}
+
+func formatMeegleMissingRequiredInputs(missing pipeline.MissingRequiredInputs) string {
+	if len(missing.Flags) == 1 && len(missing.Args) == 0 {
+		return fmt.Sprintf("missing required parameter: --%s", missing.Flags[0])
+	}
+	if len(missing.Flags) == 0 && len(missing.Args) == 1 {
+		return fmt.Sprintf("missing required argument <%s>", missing.Args[0])
+	}
+
+	inputs := make([]string, 0, missing.Len())
+	for _, name := range missing.Flags {
+		inputs = append(inputs, "--"+name)
+	}
+	for _, name := range missing.Args {
+		inputs = append(inputs, "<"+name+">")
+	}
+	switch {
+	case len(missing.Args) == 0:
+		return "missing required parameters: " + strings.Join(inputs, ", ")
+	case len(missing.Flags) == 0:
+		return "missing required arguments: " + strings.Join(inputs, ", ")
+	default:
+		return "missing required inputs: " + strings.Join(inputs, ", ")
+	}
 }
 
 // normalizeStructuredFlagNames accepts MCP's snake_case parameter names in

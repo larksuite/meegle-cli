@@ -369,6 +369,32 @@ func TestComposite_ErrorEnvelope_Table_KVOfErrorRecord(t *testing.T) {
 	}
 }
 
+func TestComposite_ErrorEnvelope_TableDoesNotTruncateActionableFields(t *testing.T) {
+	c := NewComposite(formatter.Standard{}, DefaultTableView())
+	message := "missing required parameters: --work-item-type, --user-key, --project-key"
+	suggestion := "meegle workflow list-state-transitions --help"
+	env := map[string]any{
+		"data": nil,
+		"meta": map[string]any{},
+		"error": map[string]any{
+			"code":       "CLIENT_MISSING_REQUIRED",
+			"message":    message,
+			"retryable":  false,
+			"suggestion": suggestion,
+		},
+	}
+	out, err := c.Format(env, &frameworkoutput.FormatOptions{Mode: "table", ErrorEnvelope: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{message, suggestion} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("error table truncated %q:\n%s", want, s)
+		}
+	}
+}
+
 // Error envelope must NEVER be unwrapped even though the outer payload is a
 // three-key object — ErrorEnvelope=true takes priority over any unwrap rule.
 func TestComposite_ErrorEnvelope_NeverUnwraps(t *testing.T) {
