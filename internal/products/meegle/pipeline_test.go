@@ -76,8 +76,18 @@ func TestSessionStep_NilState(t *testing.T) {
 	}
 }
 
-func TestSessionStep_UsesPreInjectedValues(t *testing.T) {
-	step := &SessionStep{}
+func TestCLIAPIRuntime_LocalHandoffDisableSkipsAuth(t *testing.T) {
+	setupTestDir(t)
+	state := localPipelineState(t, "ai-handoff availability", nil)
+	t.Setenv("MEEGLE_AI_HANDOFF", "disabled")
+
+	if err := (&CLIAPIRuntime{Session: &SessionStep{}}).PrepareSession(context.Background(), state); err != nil {
+		t.Fatalf("locally disabled handoff should not require auth: %v", err)
+	}
+}
+
+func TestMCPRuntime_UsesPreInjectedValues(t *testing.T) {
+	runtime := &MCPRuntime{Session: &SessionStep{}}
 	state := &pipeline.PipelineContext{
 		Parsed: &router.ParsedCommand{
 			FullPath: []string{"workitem", "get-brief"},
@@ -89,7 +99,7 @@ func TestSessionStep_UsesPreInjectedValues(t *testing.T) {
 			"mcp.headers":  map[string]string{"X-Custom-Auth": "some-token"},
 		},
 	}
-	err := step.Execute(context.Background(), state)
+	err := runtime.PrepareSession(context.Background(), state)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,8 +108,8 @@ func TestSessionStep_UsesPreInjectedValues(t *testing.T) {
 	}
 }
 
-func TestSessionStep_SkipsWithInjectedNoAuthHeader(t *testing.T) {
-	step := &SessionStep{}
+func TestMCPRuntime_SkipsWithInjectedNoAuthHeader(t *testing.T) {
+	runtime := &MCPRuntime{Session: &SessionStep{}}
 	state := &pipeline.PipelineContext{
 		Parsed: &router.ParsedCommand{
 			FullPath: []string{"workitem", "get-brief"},
@@ -111,7 +121,7 @@ func TestSessionStep_SkipsWithInjectedNoAuthHeader(t *testing.T) {
 			"mcp.headers":  map[string]string{"X-Tenant": "abc"},
 		},
 	}
-	err := step.Execute(context.Background(), state)
+	err := runtime.PrepareSession(context.Background(), state)
 	if err != nil {
 		t.Fatalf("expected no error for injected without Authorization, got: %v", err)
 	}
@@ -137,13 +147,13 @@ func TestSessionStep_ConfigAccessTokenBypassesKeychain(t *testing.T) {
 	if err := step.Execute(context.Background(), state); err != nil {
 		t.Fatalf("session step failed: %v", err)
 	}
-	if got := state.OutputConfig["mcp.token"]; got != "tok_from_env" {
+	if got := state.OutputConfig["session.token"]; got != "tok_from_env" {
 		t.Errorf("expected token from env, got %v", got)
 	}
-	if _, ok := state.OutputConfig["mcp.token_manager"]; ok {
+	if _, ok := state.OutputConfig["session.token_manager"]; ok {
 		t.Error("config-token mode must not attach a token manager")
 	}
-	if _, ok := state.OutputConfig["mcp.store"]; ok {
+	if _, ok := state.OutputConfig["session.store"]; ok {
 		t.Error("config-token mode must not attach a token store")
 	}
 }
@@ -168,13 +178,13 @@ func TestSessionStep_EnvVarsOverrideProfile(t *testing.T) {
 	if err := step.Execute(context.Background(), state); err != nil {
 		t.Fatalf("session step failed: %v", err)
 	}
-	if got := state.OutputConfig["mcp.host"]; got != "env.example.com" {
+	if got := state.OutputConfig["session.host"]; got != "env.example.com" {
 		t.Errorf("expected env host to win, got %v", got)
 	}
-	if got := state.OutputConfig["mcp.token"]; got != "tok_from_env_var" {
+	if got := state.OutputConfig["session.token"]; got != "tok_from_env_var" {
 		t.Errorf("expected env token to win, got %v", got)
 	}
-	if _, ok := state.OutputConfig["mcp.token_manager"]; ok {
+	if _, ok := state.OutputConfig["session.token_manager"]; ok {
 		t.Error("env-var mode must not attach a token manager")
 	}
 }
@@ -195,10 +205,10 @@ func TestSessionStep_EnvVarsEnableZeroConfig(t *testing.T) {
 	if err := step.Execute(context.Background(), state); err != nil {
 		t.Fatalf("session step failed: %v", err)
 	}
-	if got := state.OutputConfig["mcp.host"]; got != "zero.example.com" {
+	if got := state.OutputConfig["session.host"]; got != "zero.example.com" {
 		t.Errorf("expected zero-config env host, got %v", got)
 	}
-	if got := state.OutputConfig["mcp.token"]; got != "tok_zero" {
+	if got := state.OutputConfig["session.token"]; got != "tok_zero" {
 		t.Errorf("expected zero-config env token, got %v", got)
 	}
 }
@@ -218,15 +228,14 @@ func TestSessionStep_EnvHostIsSanitized(t *testing.T) {
 	if err := step.Execute(context.Background(), state); err != nil {
 		t.Fatalf("session step failed: %v", err)
 	}
-	if got := state.OutputConfig["mcp.host"]; got != "env.example.com" {
+	if got := state.OutputConfig["session.host"]; got != "env.example.com" {
 		t.Errorf("expected sanitized env host, got %v", got)
 	}
 }
 
 // SessionStep must forward the resolved access_token_header into OutputConfig
-// under `mcp.access_token_header`. ExecutorStep reads that key to decide
-// which HTTP header the token lands in; losing it here silently falls back
-// to Authorization: Bearer and the request fails server-side.
+// under `session.access_token_header`. The selected runtime projects that
+// value into its backend client configuration, preserving custom auth headers.
 func TestSessionStep_AccessTokenHeader_PropagatesToOutputConfig(t *testing.T) {
 	setupTestDir(t)
 	if err := SaveProfileConfig("default", MeegleConfig{
@@ -247,8 +256,8 @@ func TestSessionStep_AccessTokenHeader_PropagatesToOutputConfig(t *testing.T) {
 	if err := step.Execute(context.Background(), state); err != nil {
 		t.Fatalf("session step failed: %v", err)
 	}
-	if got := state.OutputConfig["mcp.access_token_header"]; got != "x-meegle-auth" {
-		t.Errorf("expected mcp.access_token_header = x-meegle-auth, got %v", got)
+	if got := state.OutputConfig["session.access_token_header"]; got != "x-meegle-auth" {
+		t.Errorf("expected session.access_token_header = x-meegle-auth, got %v", got)
 	}
 }
 
@@ -275,7 +284,7 @@ func TestSessionStep_AccessTokenHeader_EnvOverride(t *testing.T) {
 	if err := step.Execute(context.Background(), state); err != nil {
 		t.Fatalf("session step failed: %v", err)
 	}
-	if got := state.OutputConfig["mcp.access_token_header"]; got != "x-from-env" {
+	if got := state.OutputConfig["session.access_token_header"]; got != "x-from-env" {
 		t.Errorf("expected env override to win, got %v", got)
 	}
 }
@@ -299,7 +308,7 @@ func TestSessionStep_SanitizesHostWithScheme(t *testing.T) {
 	if err := step.Execute(context.Background(), state); err != nil {
 		t.Fatalf("session step failed: %v", err)
 	}
-	if got := state.OutputConfig["mcp.host"]; got != "meegle.com" {
+	if got := state.OutputConfig["session.host"]; got != "meegle.com" {
 		t.Errorf("expected sanitized host 'meegle.com', got %v", got)
 	}
 }
@@ -331,6 +340,30 @@ func TestSessionStep_ConfigAccessTokenMissingEnvFailsFast(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "CI_TOKEN_UNSET") {
 		t.Errorf("expected error to mention var name, got: %v", err)
+	}
+}
+
+func TestSessionStep_FirstRunUsesIdentityProfileSnapshot(t *testing.T) {
+	wantErr := errors.New("first-run invoked")
+	var gotProfile string
+	step := &SessionStep{
+		Identity:      &ResolvedIdentity{ProfileName: "provider-selected"},
+		isInteractive: func() bool { return true },
+		checkFirstRun: func(_ context.Context, profile string, _ ResolvedIdentity) error {
+			gotProfile = profile
+			return wantErr
+		},
+	}
+	state := &pipeline.PipelineContext{Parsed: &router.ParsedCommand{
+		FullPath: []string{"workitem", "get-brief"},
+		Flags:    map[string]any{"profile": "requested"},
+	}}
+	err := step.Execute(context.Background(), state)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("SessionStep.Execute() error = %v, want injected first-run result", err)
+	}
+	if gotProfile != "provider-selected" {
+		t.Fatalf("first-run profile = %q, want provider-selected", gotProfile)
 	}
 }
 
@@ -954,7 +987,7 @@ func TestSessionStep_DryRunSkipsAuth(t *testing.T) {
 // Regression: pipeline factory must keep the dry-run support visible by
 // including SessionStep before McpExecutorStep — both must honor --dry-run.
 func TestNewPipelineFactory_DryRunSupportedEndToEnd(t *testing.T) {
-	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil))
+	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil), nil, nil)
 	pipe, err := factory(cliapp.Config{})
 	if err != nil {
 		t.Fatalf("pipeline factory: %v", err)
@@ -990,7 +1023,7 @@ func TestNewPipelineFactory_DryRunSupportedEndToEnd(t *testing.T) {
 // kebab-case. Required values supplied through --params must normalize before
 // MeegleValidateStep checks them.
 func TestNewPipelineFactoryParamsSatisfyRequiredSnakeCaseFlags(t *testing.T) {
-	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil))
+	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil), nil, nil)
 	pipe, err := factory(cliapp.Config{})
 	if err != nil {
 		t.Fatalf("pipeline factory: %v", err)
@@ -1247,7 +1280,7 @@ func TestCoerceValue_ObjectNonStringPassesThrough(t *testing.T) {
 }
 
 func TestNewPipelineFactory(t *testing.T) {
-	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil))
+	factory := newPipelineFactory(NewDynamicRegistrySetup(nil, nil), nil, nil)
 	pipe, err := factory(cliapp.Config{})
 	if err != nil {
 		t.Fatalf("unexpected error from pipeline factory: %v", err)
@@ -1257,7 +1290,7 @@ func TestNewPipelineFactory(t *testing.T) {
 	}
 	expectedNames := []string{
 		"param_merge",
-		"structured_flag_name_normalize", "meegle_validate", "session", "mcp_executor", "auto_paginate", "batch_executor", "attachment_shortcut", "output",
+		"structured_flag_name_normalize", "runtime_validate", "runtime_session", "runtime_executor", "output",
 	}
 	if len(pipe.Steps) != len(expectedNames) {
 		t.Fatalf("expected %d steps, got %d", len(expectedNames), len(pipe.Steps))
@@ -1476,16 +1509,15 @@ func TestExtractLogID(t *testing.T) {
 	}
 }
 
-// SessionStep must translate ident.UserAgentCaller into the pre-built
-// "mcp.user_agent" key that newMcpClientFromState consumes. This pins the
-// startup → runtime handoff.
-func TestSessionStep_WritesUserAgentToOutputConfig(t *testing.T) {
+// MCPRuntime projects the shared resolved session into MCP-specific state.
+func TestMCPRuntime_WritesUserAgentToOutputConfig(t *testing.T) {
 	setupTestDir(t)
 	t.Setenv("MEEGLE_HOST", "env.example.com")
 	t.Setenv("MEEGLE_USER_ACCESS_TOKEN", "tok_env")
 	t.Setenv("MEEGLE_USER_AGENT", "ci-runner")
 
-	step := &SessionStep{}
+	httpClient := &http.Client{}
+	runtime := &MCPRuntime{Session: &SessionStep{HTTPClient: httpClient}}
 	state := &pipeline.PipelineContext{
 		Parsed: &router.ParsedCommand{
 			FullPath: []string{"workitem", "get-brief"},
@@ -1493,13 +1525,22 @@ func TestSessionStep_WritesUserAgentToOutputConfig(t *testing.T) {
 		},
 		OutputConfig: map[string]any{},
 	}
-	if err := step.Execute(context.Background(), state); err != nil {
-		t.Fatalf("session step failed: %v", err)
+	if err := runtime.PrepareSession(context.Background(), state); err != nil {
+		t.Fatalf("prepare session failed: %v", err)
 	}
 	ua, _ := state.OutputConfig["mcp.user_agent"].(string)
 	wantSuffix := " ci-runner"
 	if !strings.HasPrefix(ua, "meegle-cli") || !strings.HasSuffix(ua, wantSuffix) {
 		t.Errorf("expected mcp.user_agent to end with ' ci-runner', got %q", ua)
+	}
+	if sessionUA, _ := state.OutputConfig["session.user_agent"].(string); sessionUA != ua {
+		t.Errorf("session.user_agent = %q, want %q", sessionUA, ua)
+	}
+	if got, _ := state.OutputConfig["mcp.http_client"].(*http.Client); got != httpClient {
+		t.Errorf("mcp.http_client = %p, want %p", got, httpClient)
+	}
+	if got, _ := state.OutputConfig["session.http_client"].(*http.Client); got != httpClient {
+		t.Errorf("session.http_client = %p, want %p", got, httpClient)
 	}
 }
 

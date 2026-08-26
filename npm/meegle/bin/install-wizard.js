@@ -157,6 +157,20 @@ function runCapture(cmd, args, opts = {}) {
   });
 }
 
+// installAgentSkill is shared by the full install wizard and the lightweight
+// startup updater. The wizard keeps strict failure semantics, while the
+// updater passes bestEffort=true so an unavailable Skill installer never
+// changes a successful CLI upgrade into a failure.
+function installAgentSkill({ bestEffort = false, runFn = run } = {}) {
+  try {
+    runFn("npm", ["exec", "--yes", "--package=skills", "--", "skills", "add", SKILLS_REPO, "-y", "-g"], { timeout: 120000 });
+    return true;
+  } catch (err) {
+    if (!bestEffort) throw err;
+    return false;
+  }
+}
+
 function question(prompt) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -274,7 +288,7 @@ async function stepInstallSkills(msg) {
   // skill just upgrades / no-ops. We always run it instead of trying to detect
   // prior installs — name-substring detection mis-fired on sibling skills like
   // `meegle-plugin` and silently skipped the core skill.
-  run("npm", ["exec", "--yes", "--package=skills", "--", "skills", "add", SKILLS_REPO, "-y", "-g"], { timeout: 120000 });
+  installAgentSkill();
   console.log(msg.skillsDone);
 }
 
@@ -375,4 +389,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main };
+module.exports = { installAgentSkill, main };

@@ -372,6 +372,15 @@ func GetServerURL(cfg MeegleConfig) string {
 	return fmt.Sprintf("https://%s/mcp_server/v1", host)
 }
 
+func GetAPIBaseURL(cfg MeegleConfig) string {
+	host := cfg.Host
+	if host == "" {
+		host = "meegle.com"
+	}
+	host = sanitizeHost(host)
+	return fmt.Sprintf("https://%s", host)
+}
+
 func IsConfigured(profile string) (bool, error) {
 	cfg, err := LoadConfig(profile)
 	if err != nil {

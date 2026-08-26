@@ -12,8 +12,17 @@ import (
 	"golang.org/x/term"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
+	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/prompt"
+	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
+
+// ErrFirstRunSetupComplete tells the public process entry that interactive
+// setup succeeded and the user should re-run the original command. It avoids
+// calling os.Exit from library code embedded by an enterprise binary and is
+// marked as successful control flow so the CLI runtime does not render it to
+// stderr as a false error.
+var ErrFirstRunSetupComplete = cliapp.SuccessfulExit(errors.New("first-run setup complete"))
 
 // NormalizeHost extracts the host from a URL or returns the raw string.
 // Exported so that sub-packages (e.g. commands) can reuse if needed.
@@ -23,7 +32,21 @@ func NormalizeHost(raw string) string {
 
 // CheckFirstRun ensures the CLI is configured and authenticated.
 // Skipped for config, auth, and help commands.
-func CheckFirstRun(profileName string) error {
+func CheckFirstRun(ctx context.Context, profileName string) error {
+	return checkFirstRun(ctx, profileName, nil)
+}
+
+// CheckFirstRunWithIdentity continues first-run setup from the identity
+// snapshot already resolved at CLI startup. It prevents stateful credential
+// providers from being invoked twice during one terminal execution.
+func CheckFirstRunWithIdentity(ctx context.Context, profileName string, identity ResolvedIdentity) error {
+	return checkFirstRun(ctx, profileName, &identity)
+}
+
+func checkFirstRun(ctx context.Context, profileName string, identity *ResolvedIdentity) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if profileName == "" {
 		var err error
 		profileName, err = GetCurrentProfileName()
@@ -37,9 +60,14 @@ func CheckFirstRun(profileName string) error {
 		return err
 	}
 
-	ident, err := ResolveIdentity(cfg, profileName)
-	if err != nil {
-		return err
+	var ident ResolvedIdentity
+	if identity != nil {
+		ident = *identity
+	} else {
+		ident, err = ResolveCLIIdentity(ctx, cfg, profileName)
+		if err != nil {
+			return err
+		}
 	}
 
 	needsHost := ident.Host == ""
@@ -51,9 +79,9 @@ func CheckFirstRun(profileName string) error {
 
 	// Check if terminal is interactive
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		fmt.Fprintf(os.Stderr, "\n  Error: Meegle CLI is not initialized and the current environment does not support interactive setup.\n\n")
-		fmt.Fprintln(os.Stderr, "  Please run in an interactive terminal: meegle config init && meegle auth login")
-		os.Exit(1)
+		return meerrors.NewClientError("FIRST_RUN_INTERACTIVE_REQUIRED",
+			"Meegle CLI is not initialized and the current environment does not support interactive setup").
+			WithSuggestion("run in an interactive terminal: meegle config init && meegle auth login")
 	}
 
 	fmt.Printf("\n  Welcome to Meegle CLI! First-time setup is required.\n\n")
@@ -72,9 +100,8 @@ func CheckFirstRun(profileName string) error {
 	}
 
 	if needsAuth {
-		ctx := context.Background()
 		store := auth.CreateTokenStore(profileName)
-		tokenManager := auth.NewTokenManager(store, ident.Host)
+		tokenManager := auth.NewTokenManager(store, ident.Host).WithHTTPClient(auth.HTTPClient(ctx))
 		tokenData, err := auth.StartAuthCodeFlow(ctx, ident.Host)
 		if err != nil {
 			return err
@@ -86,8 +113,7 @@ func CheckFirstRun(profileName string) error {
 	}
 
 	fmt.Printf("  Setup complete. Please re-run your command.\n\n")
-	os.Exit(0)
-	return nil
+	return ErrFirstRunSetupComplete
 }
 
 var firstrunPresetHosts = []struct {

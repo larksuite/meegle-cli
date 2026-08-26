@@ -49,7 +49,7 @@ type tokenVerifier func(ctx context.Context, ident meegle.ResolvedIdentity) stri
 // the actual probe. Split so tests drive verifyMCPClient against an
 // httptest server, bypassing GetServerURL's hardcoded https URL.
 func verifyTokenViaListTools(ctx context.Context, ident meegle.ResolvedIdentity) string {
-	client := meegle.NewMCPClientFromIdentity(ident)
+	client := meegle.NewMCPClientFromIdentity(ident, mcpclient.WithHTTPClient(auth.HTTPClient(ctx)))
 	if client == nil {
 		// Defensive: caller should not invoke the verifier without a token,
 		// but if they do, surface a clear reason instead of a nil panic.
@@ -174,7 +174,7 @@ func newLoginCmd() *cobra.Command {
 				}
 			}
 
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			// --phase init: initialize device code, output verification info
 			if phase == "init" {
@@ -222,7 +222,7 @@ func newLoginCmd() *cobra.Command {
 						if err := tm.SaveToken(result.TokenData); err != nil {
 							return err
 						}
-						invalidateToolCache(profileName)
+						invalidateProfileCaches(profileName)
 						text, err := renderPayload(map[string]any{"status": "ok", "message": "Login successful"}, format)
 						if err != nil {
 							return err
@@ -265,7 +265,7 @@ func newLoginCmd() *cobra.Command {
 				if err := tm.SaveToken(tokenData); err != nil {
 					return err
 				}
-				invalidateToolCache(profileName)
+				invalidateProfileCaches(profileName)
 				text, err := renderPayload(map[string]any{"status": "ok", "message": "Login successful"}, format)
 				if err != nil {
 					return err
@@ -325,7 +325,7 @@ func runInteractiveLogin(ctx context.Context, profileName, hostFlag string, cfg 
 	if err := tm.SaveToken(tokenData); err != nil {
 		return err
 	}
-	invalidateToolCache(profileName)
+	invalidateProfileCaches(profileName)
 
 	fmt.Printf("✓ [%s] Login successful!\n", profileName)
 	printCompletionHint()
@@ -385,14 +385,17 @@ type StatusResult struct {
 // the server. verify is injected so tests substitute a deterministic stub
 // — production paths wire verifyTokenViaListTools.
 func buildStatusResult(ctx context.Context, profileName string, verify tokenVerifier) (*StatusResult, error) {
-	cfg, err := loadConfig(profileName)
-	if err != nil {
-		return nil, err
-	}
-
-	ident, err := meegle.ResolveIdentity(cfg, profileName)
-	if err != nil {
-		return nil, err
+	ident, hasSnapshot := meegle.CLIIdentityFromContext(ctx)
+	if !hasSnapshot {
+		cfg, err := loadConfig(profileName)
+		if err != nil {
+			return nil, err
+		}
+		resolved, resolveErr := meegle.ResolveCLIIdentity(ctx, cfg, profileName)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		ident = resolved
 	}
 
 	var host *string
@@ -454,6 +457,14 @@ func statusExitCode(r *StatusResult) int {
 	return 1
 }
 
+// StatusExitError carries the already-rendered auth status exit code back to
+// the public process entry without calling os.Exit from embeddable code.
+type StatusExitError struct{ Code int }
+
+func (e *StatusExitError) Error() string {
+	return fmt.Sprintf("authentication status exit code %d", e.Code)
+}
+
 func newStatusCmd() *cobra.Command {
 	var format string
 
@@ -479,7 +490,7 @@ func newStatusCmd() *cobra.Command {
 			}
 			renderStatus(result, profileName, format)
 			if code := statusExitCode(result); code != 0 {
-				os.Exit(code)
+				return &StatusExitError{Code: code}
 			}
 			return nil
 		},

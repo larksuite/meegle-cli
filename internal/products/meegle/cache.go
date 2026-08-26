@@ -4,9 +4,6 @@
 package meegle
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
@@ -20,8 +17,7 @@ type cacheData struct {
 }
 
 type ToolCache struct {
-	filePath string
-	ttl      time.Duration
+	storage *jsonFileCache[cacheData]
 }
 
 // CacheResult holds the retrieved tools and whether the cache is stale.
@@ -31,43 +27,28 @@ type CacheResult struct {
 }
 
 func NewToolCache(cacheDir string, profile string, ttl time.Duration) *ToolCache {
-	filename := "tools.json"
-	if profile != "" && profile != "default" {
-		filename = "tools-" + profile + ".json"
-	}
-	return &ToolCache{filePath: filepath.Join(cacheDir, filename), ttl: ttl}
+	return &ToolCache{storage: newJSONFileCache(cacheDir, "tools", profile, ttl, func(data cacheData) int64 {
+		return data.Timestamp
+	})}
 }
 
 func (c *ToolCache) Get() (*CacheResult, error) {
-	data, err := os.ReadFile(c.filePath)
+	cached, err := c.storage.Get()
 	if err != nil {
+		return nil, err
+	}
+	if cached == nil {
 		return nil, nil
 	}
-	var cached cacheData
-	if err := json.Unmarshal(data, &cached); err != nil {
-		return nil, nil
-	}
-	stale := time.Since(time.UnixMilli(cached.Timestamp)) > c.ttl
-	return &CacheResult{Tools: cached.Tools, Stale: stale}, nil
+	return &CacheResult{Tools: cached.Value.Tools, Stale: cached.Stale}, nil
 }
 
 func (c *ToolCache) Set(tools []types.ToolDefinition) error {
-	data := cacheData{Timestamp: time.Now().UnixMilli(), Tools: tools}
-	b, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(c.filePath), 0700); err != nil {
-		return err
-	}
-	return os.WriteFile(c.filePath, b, 0600)
+	return c.storage.Set(cacheData{Timestamp: time.Now().UnixMilli(), Tools: tools})
 }
 
 // Clear removes the cache file. A missing file is not an error so callers
 // (e.g. `auth login` success) can invalidate unconditionally.
 func (c *ToolCache) Clear() error {
-	if err := os.Remove(c.filePath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return c.storage.Clear()
 }

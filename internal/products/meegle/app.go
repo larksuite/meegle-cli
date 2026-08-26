@@ -8,12 +8,17 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	platformapi "github.com/larksuite/meegle-cli/extension/platform"
+	platformruntime "github.com/larksuite/meegle-cli/internal/extension/platform"
+	exttransport "github.com/larksuite/meegle-cli/internal/extension/transport"
+	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/discovery"
-	"github.com/larksuite/meegle-cli/internal/products/meegle/dynamic"
+	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
@@ -36,6 +41,108 @@ var MeegleGlobalFlags = []registry.FlagDef{
 	},
 }
 
+var credentialDeferredRootCommands = map[string]struct{}{
+	"auth": {}, "completion": {}, "config": {}, "extension": {},
+	"help": {}, "inspect": {}, "url": {}, "version": {},
+}
+
+// shouldResolveCredentialAtBootstrap reports whether command discovery needs
+// an identity before Cobra can route the invocation. Known local roots defer
+// identity resolution to their own handlers; dynamic or unknown command roots
+// keep the fail-closed startup path so MCP commands can be discovered.
+func shouldResolveCredentialAtBootstrap(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	longFlags := make(map[string]registry.FlagDef, len(registry.BuiltinFlags)+len(MeegleGlobalFlags))
+	shortFlags := make(map[string]registry.FlagDef)
+	for _, flag := range append(append([]registry.FlagDef(nil), registry.BuiltinFlags...), MeegleGlobalFlags...) {
+		longFlags[flag.Name] = flag
+		if flag.Short != "" {
+			shortFlags[flag.Short] = flag
+		}
+	}
+
+	rootCommand := ""
+	expectsValue := false
+	for _, arg := range args {
+		if expectsValue {
+			expectsValue = false
+			continue
+		}
+		if arg == "--" {
+			// Everything after the terminator is positional input, not a command
+			// or a global meta flag. If no command was found, Cobra will reject it
+			// without needing credentials.
+			return rootCommand != ""
+		}
+		if enabledBooleanFlag(arg, "help", "h") {
+			// Root help is local. Help for a dynamic root still needs discovery;
+			// local roots have already returned above when they were encountered.
+			return rootCommand != ""
+		}
+		if enabledBooleanFlag(arg, "version", "") {
+			return false
+		}
+		if name, hasValue, ok := splitLongFlag(arg); ok {
+			flag, known := longFlags[name]
+			if !known {
+				return rootCommand != ""
+			}
+			if !hasValue && flag.Type != registry.FlagTypeBool {
+				expectsValue = true
+			}
+			continue
+		}
+		if name, hasValue, ok := splitShortFlag(arg); ok {
+			flag, known := shortFlags[name]
+			if !known {
+				return rootCommand != ""
+			}
+			if !hasValue && flag.Type != registry.FlagTypeBool {
+				expectsValue = true
+			}
+			continue
+		}
+		if rootCommand == "" {
+			rootCommand = arg
+			if _, deferred := credentialDeferredRootCommands[rootCommand]; deferred {
+				return false
+			}
+		}
+	}
+	return rootCommand != ""
+}
+
+func enabledBooleanFlag(arg, longName, shortName string) bool {
+	if arg == "--"+longName || (shortName != "" && arg == "-"+shortName) {
+		return true
+	}
+	value, ok := strings.CutPrefix(arg, "--"+longName+"=")
+	if !ok {
+		return false
+	}
+	enabled, err := strconv.ParseBool(value)
+	return err == nil && enabled
+}
+
+func splitLongFlag(arg string) (name string, hasValue bool, ok bool) {
+	value, ok := strings.CutPrefix(arg, "--")
+	if !ok || value == "" {
+		return "", false, false
+	}
+	name, _, hasValue = strings.Cut(value, "=")
+	return name, hasValue, true
+}
+
+func splitShortFlag(arg string) (name string, hasValue bool, ok bool) {
+	if len(arg) < 2 || arg[0] != '-' || arg[1] == '-' {
+		return "", false, false
+	}
+	name = string(arg[1])
+	return name, len(arg) > 2, true
+}
+
 // hasRefreshFlag scans raw argv for the --refresh boolean flag before cobra
 // parses. We need it pre-parse because the command tree is built (and the
 // cache lookup happens) inside Setup, which runs before flag parsing.
@@ -55,6 +162,54 @@ func hasRefreshFlag(args []string) bool {
 	return false
 }
 
+// profileNameFromArgs applies the persistent --profile flag before the Cobra
+// tree and its profile-specific discovery cache are built.
+func profileNameFromArgs(args []string, fallback string) string {
+	profile := fallback
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			break
+		}
+		if value, ok := strings.CutPrefix(arg, "--profile="); ok {
+			if value != "" {
+				profile = value
+			}
+			continue
+		}
+		if arg == "--profile" && index+1 < len(args) && args[index+1] != "" && !strings.HasPrefix(args[index+1], "--") {
+			profile = args[index+1]
+			index++
+		}
+	}
+	return profile
+}
+
+// finalizePlugins preserves a business-command failure. A fail-closed
+// Shutdown error is returned only when the command itself succeeded.
+func finalizePlugins(runErr, shutdownErr error) error {
+	if cliapp.IsSuccessfulExit(runErr) {
+		if shutdownErr != nil {
+			return shutdownErr
+		}
+		return runErr
+	}
+	if runErr != nil {
+		if shutdownErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[meegle] shutdown hook failed after command error: %v\n", shutdownErr)
+		}
+		return runErr
+	}
+	return shutdownErr
+}
+
+func lifecycleCommandError(runErr error) error {
+	if cliapp.IsSuccessfulExit(runErr) {
+		return nil
+	}
+	return runErr
+}
+
 // StaticCommands allows external callers (cmd/meegle) to inject static subcommands, avoiding circular imports.
 type StaticCommands struct {
 	Auth       *cobra.Command
@@ -69,13 +224,38 @@ type StaticCommands struct {
 func NewCLIApp(version string, staticCmds *StaticCommands) (*cliapp.App, error) {
 	// 1. Load default configuration (graceful: use empty config on failure)
 	profileName, _ := GetCurrentProfileName()
+	profileName = profileNameFromArgs(os.Args[1:], profileName)
 	cfg, _ := LoadConfig(profileName)
 
 	// 2. Build MCP client (if host + token are configured)
-	client, ident := buildMcpClient(cfg, profileName)
+	ctx := context.Background()
+	httpClient, transportDiagnostics := exttransport.NewHTTPClientWithDiagnostics(ctx, http.DefaultClient)
+	plugins, err := platformruntime.Install(version)
+	if err != nil {
+		return nil, extensionStartupError("CLIENT_EXTENSION_INSTALL_FAILED", "failed to install CLI platform extensions", err)
+	}
+	var client *mcpclient.Client
+	var ident ResolvedIdentity
+	var identitySnapshot *ResolvedIdentity
+	var bootstrapErr error
+	if shouldResolveCredentialAtBootstrap(os.Args[1:]) {
+		client, ident, err = buildCLIClient(ctx, cfg, profileName, httpClient, version)
+		if err != nil && !isCLIConfigResolutionError(err) {
+			return nil, extensionStartupError("CLIENT_CREDENTIAL_RESOLUTION_FAILED", "failed to resolve CLI credentials", err)
+		}
+		if err == nil {
+			identitySnapshot = &ident
+		} else {
+			bootstrapErr = err
+		}
+	}
 
 	// 3. Build ToolCache
-	cache := NewToolCache(GetCacheDir(), profileName, DefaultTTL)
+	effectiveProfile := profileName
+	if ident.ProfileName != "" {
+		effectiveProfile = ident.ProfileName
+	}
+	cache := NewToolCache(GetCacheDir(), effectiveProfile, DefaultTTL)
 
 	// 4. Create DynamicRegistrySetup (client may be nil; avoid the typed nil interface pitfall)
 	var lister discovery.ToolLister
@@ -85,7 +265,7 @@ func NewCLIApp(version string, staticCmds *StaticCommands) (*cliapp.App, error) 
 	// Pre-scan argv: cobra hasn't parsed yet but resolveTools needs to know
 	// whether to bypass the cache before the command tree is built.
 	forceRefresh := hasRefreshFlag(os.Args[1:])
-	registrySetup := NewDynamicRegistrySetup(
+	dynamicSetup := NewDynamicRegistrySetup(
 		lister, cache,
 		WithGlobalFlags(MeegleGlobalFlags),
 		WithTokenManager(ident.TokenManager),
@@ -93,30 +273,79 @@ func NewCLIApp(version string, staticCmds *StaticCommands) (*cliapp.App, error) 
 		WithIdentitySource(ident.Source),
 		WithForceRefresh(forceRefresh),
 		WithDiscoveryFailureDegradation(true),
+		WithBootstrapError(bootstrapErr),
 	)
+	registrySetup := registry.NewCompositeSetup(dynamicSetup, NewMeegleLocalSetup())
 
-	// 5. Placeholder executor (pipeline already contains McpExecutorStep; this is just a fallback)
+	// 5. Placeholder executor (the product pipeline owns runtime execution; this is just a fallback)
 	placeholderExec := executor.Func(func(_ context.Context, _ *executor.Request) (*executor.RawResult, error) {
 		return nil, fmt.Errorf("executor not implemented: commands should be executed via pipeline steps")
 	})
 
 	// 6. Assemble cliapp
+	customize := rootCustomizer(staticCmds, client, dynamicSetup, plugins.Diagnostics(), ident, transportDiagnostics)
 	return cliapp.New(
 		cliapp.WithAppName("meegle"),
 		cliapp.WithVersion(version),
 		cliapp.WithSetup(registrySetup),
 		cliapp.WithExecutor(placeholderExec),
-		cliapp.WithPipelineFactory(newPipelineFactory(registrySetup)),
-		cliapp.WithRootCommandCustomizer(rootCustomizer(staticCmds, client, registrySetup)),
+		cliapp.WithPipelineFactory(newPipelineFactory(dynamicSetup, identitySnapshot, httpClient)),
+		cliapp.WithContextDecorator(func(ctx context.Context) context.Context {
+			ctx = auth.WithHTTPClient(ctx, httpClient)
+			ctx = withCLIProfile(ctx, effectiveProfile)
+			if identitySnapshot != nil {
+				ctx = WithCLIIdentity(ctx, ident)
+			}
+			return ctx
+		}),
+		cliapp.WithRootCommandCustomizer(func(root *cobra.Command, meta cliapp.RootCommandMetadata) {
+			customize(root, meta)
+			plugins.Apply(root)
+		}),
+		cliapp.WithExecutionHooks(
+			func(ctx context.Context) error {
+				return plugins.Emit(ctx, platformapi.Startup, nil)
+			},
+			func(ctx context.Context, runErr error) error {
+				return finalizePlugins(runErr, plugins.Emit(ctx, platformapi.Shutdown, lifecycleCommandError(runErr)))
+			},
+		),
 	)
 }
 
-// ResolveMappedCommands resolves mapped commands under the current configuration (used by the inspect command).
-func ResolveMappedCommands() []types.MappedCommand {
-	profileName, _ := GetCurrentProfileName()
-	cfg, _ := LoadConfig(profileName)
+func extensionStartupError(code, message string, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return meerrors.NewClientError(code, message).WithCause(cause)
+}
 
-	client, ident := buildMcpClient(cfg, profileName)
+// ResolveMappedCommands resolves mapped commands under the current configuration (used by the inspect command).
+func ResolveMappedCommands(ctx context.Context) []types.MappedCommand {
+	httpClient := auth.HTTPClient(ctx)
+	ident, hasSnapshot := CLIIdentityFromContext(ctx)
+	profileName, hasProfile := cliProfileFromContext(ctx)
+	if ident.ProfileName != "" {
+		profileName = ident.ProfileName
+		hasProfile = true
+	}
+	var client *mcpclient.Client
+	if hasSnapshot {
+		client = NewMCPClientFromIdentity(ident, mcpclient.WithHTTPClient(httpClient))
+	} else {
+		if !hasProfile {
+			profileName, _ = GetCurrentProfileName()
+		}
+		cfg, _ := LoadConfig(profileName)
+		var err error
+		client, ident, err = buildCLIClient(ctx, cfg, profileName, httpClient, "")
+		if err != nil {
+			return nil
+		}
+	}
+	if profileName == "" {
+		profileName, _ = GetCurrentProfileName()
+	}
 
 	cache := NewToolCache(GetCacheDir(), profileName, DefaultTTL)
 	var lister discovery.ToolLister
@@ -128,14 +357,15 @@ func ResolveMappedCommands() []types.MappedCommand {
 		WithActiveToken(ident.Token),
 		WithIdentitySource(ident.Source),
 	)
-	tools, _ := setup.resolveTools(context.Background())
-	return dynamic.MapTools(tools)
+	tools, _ := setup.resolveTools(ctx)
+	commands, _ := mapAndSanitizeTools(tools, MeegleGlobalFlags)
+	return append(commands, localMappedCommands()...)
 }
 
 // rootCustomizer sets the root command description and adds static subcommands.
 // setup is consulted after Init runs so we can detect a stale-token (401) state
 // and surface the same login hint as the no-client path.
-func rootCustomizer(staticCmds *StaticCommands, client *mcpclient.Client, setup *DynamicRegistrySetup) cliapp.RootCommandCustomizer {
+func rootCustomizer(staticCmds *StaticCommands, client *mcpclient.Client, setup *DynamicRegistrySetup, diagnostics platformruntime.Diagnostics, identity ResolvedIdentity, transportDiagnostics ...exttransport.Diagnostics) cliapp.RootCommandCustomizer {
 	return func(root *cobra.Command, meta cliapp.RootCommandMetadata) {
 		if root == nil {
 			return
@@ -181,6 +411,12 @@ Typical Workflows:
 				root.AddCommand(staticCmds.URL)
 			}
 		}
+		var mappingIssues []ToolMappingIssue
+		if setup != nil {
+			mappingIssues = setup.MappingIssues()
+		}
+		root.AddCommand(newExtensionCommand(diagnostics, identity, mappingIssues, transportDiagnostics...))
+		annotateStaticCommands(root)
 		// When not logged in — or the active token was rejected by the server —
 		// append a source-specific note so the user knows which knob to rotate.
 		// All offline commands (--help, auth, config, completion, inspect) stay
@@ -194,6 +430,50 @@ Typical Workflows:
 		}
 
 		RegisterFlagCompletions(root, client)
+	}
+}
+
+func annotateStaticCommands(root *cobra.Command) {
+	if root == nil {
+		return
+	}
+	var walk func(*cobra.Command)
+	walk = func(parent *cobra.Command) {
+		for _, command := range parent.Commands() {
+			if command.RunE != nil {
+				if command.Annotations == nil {
+					command.Annotations = map[string]string{}
+				}
+				parts := strings.Fields(command.CommandPath())
+				if len(parts) > 1 {
+					parts = parts[1:]
+				}
+				path := strings.Join(parts, "/")
+				if command.Annotations["command_id"] == "" {
+					command.Annotations["command_id"] = "static:" + path
+				}
+				if command.Annotations["command_source"] == "" {
+					command.Annotations["command_source"] = "static"
+				}
+				if command.Annotations["risk_level"] == "" {
+					command.Annotations["risk_level"] = staticCommandRisk(path)
+				}
+			}
+			walk(command)
+		}
+	}
+	walk(root)
+}
+
+func staticCommandRisk(path string) string {
+	switch path {
+	case "version", "inspect", "auth/status", "config/show", "config/get",
+		"config/profile/list", "config/profile/current", "url/decode",
+		"extension/doctor", "extension/credentials", "extension/transport",
+		"extension/plugins", "extension/policy", "extension/discovery":
+		return "read"
+	default:
+		return "write"
 	}
 }
 
@@ -282,6 +562,19 @@ func buildMcpClient(cfg MeegleConfig, profileName string) (*mcpclient.Client, Re
 	return NewMCPClientFromIdentity(ident), ident
 }
 
+func buildCLIClient(ctx context.Context, cfg MeegleConfig, profileName string, httpClient *http.Client, version string) (*mcpclient.Client, ResolvedIdentity, error) {
+	ctx = auth.WithHTTPClient(ctx, httpClient)
+	ident, err := ResolveCLIIdentity(ctx, cfg, profileName)
+	if err != nil {
+		return nil, ResolvedIdentity{}, err
+	}
+	if ident.Host == "" || ident.Token == "" {
+		return nil, ident, nil
+	}
+	ident.MCPUserAgent = mcpclient.BuildUserAgentForVersion(version, ident.UserAgentCaller)
+	return NewMCPClientFromIdentity(ident, mcpclient.WithHTTPClient(httpClient)), ident, nil
+}
+
 // NewMCPClientFromIdentity builds an MCP client directly from an already
 // resolved identity. Callers that have already resolved the identity (e.g.
 // per-command paths that read it from ResolveIdentity to inspect Source /
@@ -289,7 +582,7 @@ func buildMcpClient(cfg MeegleConfig, profileName string) (*mcpclient.Client, Re
 // resolution that buildMcpClient performs internally.
 //
 // Requires ident.Host and ident.Token to be non-empty; returns nil otherwise.
-func NewMCPClientFromIdentity(ident ResolvedIdentity) *mcpclient.Client {
+func NewMCPClientFromIdentity(ident ResolvedIdentity, extraOpts ...mcpclient.Option) *mcpclient.Client {
 	if ident.Host == "" || ident.Token == "" {
 		return nil
 	}
@@ -304,7 +597,9 @@ func NewMCPClientFromIdentity(ident ResolvedIdentity) *mcpclient.Client {
 	if ident.AccessTokenHeader != "" {
 		opts = append(opts, mcpclient.WithAuthHeader(ident.AccessTokenHeader))
 	}
-	if ident.UserAgentCaller != "" {
+	if ident.MCPUserAgent != "" {
+		opts = append(opts, mcpclient.WithUserAgent(ident.MCPUserAgent))
+	} else if ident.UserAgentCaller != "" {
 		opts = append(opts, mcpclient.WithUserAgent(mcpclient.BuildUserAgent(ident.UserAgentCaller)))
 	}
 	if ident.Source == SourceStore {
@@ -320,5 +615,6 @@ func NewMCPClientFromIdentity(ident ResolvedIdentity) *mcpclient.Client {
 		token := ident.Token
 		opts = append(opts, mcpclient.WithToken(func() (string, error) { return token, nil }))
 	}
+	opts = append(opts, extraOpts...)
 	return mcpclient.New(baseURL, opts...)
 }

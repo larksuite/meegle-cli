@@ -90,6 +90,31 @@ func TestBuildErrorRecord_WalksUnwrapChain(t *testing.T) {
 	}
 }
 
+type panickingTraversalOutputError struct{ secret string }
+
+func (e *panickingTraversalOutputError) Error() string { return "safe public message" }
+func (e *panickingTraversalOutputError) Is(error) bool { panic(e.secret) }
+func (e *panickingTraversalOutputError) As(any) bool   { panic(e.secret) }
+func (e *panickingTraversalOutputError) Unwrap() error { panic(e.secret) }
+
+func TestBuildErrorRecord_PanickingTraversalFallsBackWithoutPanic(t *testing.T) {
+	err := &panickingTraversalOutputError{secret: "secret-output-traversal"}
+
+	var rec map[string]any
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("BuildErrorRecord propagated untrusted traversal panic: %v", recovered)
+			}
+		}()
+		rec = BuildErrorRecord(err)
+	}()
+
+	if rec["code"] != "UNKNOWN" || rec["message"] != "safe public message" {
+		t.Fatalf("unexpected fallback record: %v", rec)
+	}
+}
+
 func TestBuildErrorEnvelope_FullShape(t *testing.T) {
 	err := frameworkerrors.New(frameworkerrors.CategoryUser, "BAD", "nope")
 	env := BuildErrorEnvelope(err, map[string]any{"tool": "t", "duration_ms": 42})
@@ -184,6 +209,36 @@ func TestProcessorRenderError_CarriesResultMetadataToEnvelope(t *testing.T) {
 	meta, ok := env["meta"].(map[string]any)
 	if !ok || meta["tool"] != "list_items" {
 		t.Fatalf("meta not propagated: %v", env["meta"])
+	}
+}
+
+type stubMetadataErr struct{}
+
+func (stubMetadataErr) Error() string { return "backend failed" }
+func (stubMetadataErr) ErrorMetadata() map[string]any {
+	return map[string]any{"logid": "trace-123"}
+}
+
+func TestBuildErrorEnvelopeCarriesErrorMetadata(t *testing.T) {
+	env := BuildErrorEnvelope(stubMetadataErr{}, nil)
+	meta, ok := env["meta"].(map[string]any)
+	if !ok || meta["logid"] != "trace-123" {
+		t.Fatalf("error metadata not propagated: %v", env["meta"])
+	}
+}
+
+type panickingMetadataErr struct{}
+
+func (panickingMetadataErr) Error() string { return "backend failed" }
+func (panickingMetadataErr) ErrorMetadata() map[string]any {
+	panic("secret metadata panic")
+}
+
+func TestBuildErrorEnvelopeHandlesPanickingMetadataBuilder(t *testing.T) {
+	env := BuildErrorEnvelope(panickingMetadataErr{}, nil)
+	meta, ok := env["meta"].(map[string]any)
+	if !ok || len(meta) != 0 {
+		t.Fatalf("metadata panic should produce empty metadata: %v", env["meta"])
 	}
 }
 

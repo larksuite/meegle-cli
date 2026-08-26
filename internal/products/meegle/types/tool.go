@@ -23,10 +23,19 @@ type ToolMetadata struct {
 	Method   string `json:"method,omitempty"`
 }
 
+// ToolDefinitionIssue records a single tools/list entry that could not be
+// decoded. Keeping it alongside the list lets cache and registry layers
+// isolate that entry without converting the complete response into an error.
+type ToolDefinitionIssue struct {
+	Code string `json:"code"`
+	Path string `json:"path,omitempty"`
+}
+
 // ToolDefinition represents an MCP tool as returned by tools/list.
 type ToolDefinition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  []ToolParameter `json:"parameters,omitempty"`
-	Metadata    *ToolMetadata   `json:"metadata,omitempty"`
+	Name        string               `json:"name"`
+	Description string               `json:"description,omitempty"`
+	Parameters  []ToolParameter      `json:"parameters,omitempty"`
+	Metadata    *ToolMetadata        `json:"metadata,omitempty"`
+	Issue       *ToolDefinitionIssue `json:"issue,omitempty"`
 }

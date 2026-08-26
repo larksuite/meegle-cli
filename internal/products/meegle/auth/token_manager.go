@@ -28,9 +28,19 @@ func SetTokenRefreshWarnWriterForTesting(w io.Writer) (restore func()) {
 }
 
 type TokenManager struct {
-	Store   TokenStore
-	Host    string
-	Headers http.Header
+	Store      TokenStore
+	Host       string
+	Headers    http.Header
+	httpClient *http.Client
+}
+
+// WithHTTPClient scopes OAuth refresh traffic to client. It is configured by
+// the CLI assembly; SDK-created managers retain the default behavior.
+func (tm *TokenManager) WithHTTPClient(client *http.Client) *TokenManager {
+	if tm != nil {
+		tm.httpClient = client
+	}
+	return tm
 }
 
 func NewTokenManager(store TokenStore, host string, headers ...http.Header) *TokenManager {
@@ -81,7 +91,7 @@ func (tm *TokenManager) RefreshToken(data *TokenData) (*TokenData, error) {
 	if data.RefreshToken == "" || data.ClientID == "" || tm.Host == "" {
 		return nil, nil // not refreshable — missing prerequisites
 	}
-	ctx := context.Background()
+	ctx := WithHTTPClient(context.Background(), tm.httpClient)
 	metadata, err := FetchOAuthMetadata(ctx, tm.Host, tm.Headers)
 	if err != nil {
 		return nil, fmt.Errorf("fetch oauth metadata: %w", err)

@@ -4,6 +4,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -12,33 +13,32 @@ import (
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 )
 
-type InspectCommandProvider func() []types.MappedCommand
+type InspectCommandProvider func(context.Context) []types.MappedCommand
 
 func NewInspectCmd(mappedCommands []types.MappedCommand) *cobra.Command {
-	return NewInspectCmdWithProvider(func() []types.MappedCommand {
+	return NewInspectCmdWithProvider(func(context.Context) []types.MappedCommand {
 		return mappedCommands
 	})
 }
 
 func NewInspectCmdWithProvider(provider InspectCommandProvider) *cobra.Command {
 	if provider == nil {
-		provider = func() []types.MappedCommand { return nil }
+		provider = func(context.Context) []types.MappedCommand { return nil }
 	}
 	return &cobra.Command{
 		Use:   "inspect [command]",
 		Short: "Show parameter details for a command (e.g. inspect workitem.create)",
-		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mappedCommands := provider()
+			mappedCommands := provider(cmd.Context())
 			if len(args) == 0 {
 				return inspectListAll(mappedCommands)
 			}
-			return inspectSingle(mappedCommands, args[0])
+			return inspectSingle(mappedCommands, strings.Join(args, " "))
 		},
 	}
 }
 
-// inspectListAll lists all registered dynamic commands grouped by resource.
+// inspectListAll lists all registered commands grouped by resource.
 func inspectListAll(mappedCommands []types.MappedCommand) error {
 	if len(mappedCommands) == 0 {
 		fmt.Println("No commands available (not connected to server or cache is empty)")

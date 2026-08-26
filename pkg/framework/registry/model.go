@@ -74,6 +74,10 @@ type NodeMeta struct {
 	Dangerous  bool
 	Deprecated string
 	Scope      string
+	CommandID  string
+	Source     string
+	Risk       string
+	ToolName   string
 	Tags       map[string]string
 }
 

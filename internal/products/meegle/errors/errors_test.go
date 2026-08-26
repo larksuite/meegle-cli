@@ -5,9 +5,25 @@ package errors
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestMeegleErrorPreservesWrappedCause(t *testing.T) {
+	cause := errors.New("provider unavailable")
+	err := NewClientError("CLIENT_EXTENSION_INSTALL_FAILED", "extension startup failed").WithCause(cause)
+	if !errors.Is(err, cause) {
+		t.Fatalf("errors.Is(%v, cause) = false", err)
+	}
+	data, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("marshal: %v", marshalErr)
+	}
+	if strings.Contains(string(data), "provider unavailable") {
+		t.Fatalf("private cause leaked into JSON payload: %s", data)
+	}
+}
 
 func TestClientError(t *testing.T) {
 	err := NewClientError("INVALID_PARAMS", "invalid parameter format")
@@ -84,5 +100,13 @@ func TestErrorPayload_NilReceiver(t *testing.T) {
 	var e *MeegleError
 	if rec := e.ErrorPayload(); rec != nil {
 		t.Fatalf("nil receiver should return nil map, got %v", rec)
+	}
+}
+
+func TestErrorMetadataIncludesLogID(t *testing.T) {
+	err := NewServerError("BACKEND_5XX", "upstream failed").WithLogID(" trace-123 ")
+	metadata := err.ErrorMetadata()
+	if metadata["logid"] != "trace-123" {
+		t.Fatalf("logid = %v, want trace-123", metadata["logid"])
 	}
 }

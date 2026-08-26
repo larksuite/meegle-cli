@@ -13,8 +13,8 @@ import (
 	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
 
-// sdkInjectStep pre-injects all MCP connection config into OutputConfig.
-// Executes before SessionStep; SessionStep skips local reads when values are already present.
+// sdkInjectStep pre-injects the shared command session plus the MCP endpoint.
+// Backend runtimes consume the shared session without reading CLI profiles.
 type sdkInjectStep struct {
 	cfg *ClientConfig
 }
@@ -25,13 +25,20 @@ func (s *sdkInjectStep) Execute(ctx context.Context, state *pipeline.PipelineCon
 	if state.OutputConfig == nil {
 		state.OutputConfig = make(map[string]any)
 	}
+	token := s.cfg.resolveToken()
 	state.OutputConfig["mcp.host"] = s.cfg.Host
 	state.OutputConfig["mcp.headers"] = s.cfg.Headers
-	state.OutputConfig["mcp.token"] = s.cfg.resolveToken()
+	state.OutputConfig["mcp.token"] = token
 	state.OutputConfig["mcp.server_url"] = s.cfg.serverURL()
 	state.OutputConfig["mcp.injected"] = true
+	state.OutputConfig["session.host"] = s.cfg.Host
+	state.OutputConfig["session.headers"] = s.cfg.Headers
+	state.OutputConfig["session.token"] = token
+	state.OutputConfig["session.injected"] = true
 	if s.cfg.UserAgent != "" {
-		state.OutputConfig["mcp.user_agent"] = s.cfg.buildUserAgent()
+		userAgent := s.cfg.buildUserAgent()
+		state.OutputConfig["mcp.user_agent"] = userAgent
+		state.OutputConfig["session.user_agent"] = userAgent
 	}
 	return nil
 }
@@ -43,14 +50,19 @@ func newSDKPipelineFactory(cfg *ClientConfig, setup *meegle.DynamicRegistrySetup
 	if setup != nil {
 		commandsFunc = setup.MappedCommands
 	}
+	session := &meegle.SessionStep{}
+	resolver := meegle.NewCommandRuntimeResolver(
+		&meegle.MCPRuntime{Session: session, CommandsFunc: commandsFunc},
+		&meegle.CLIAPIRuntime{Session: session},
+	)
 	return func(appCfg cliapp.Config) (*pipeline.Pipeline, error) {
 		return &pipeline.Pipeline{Steps: []pipeline.PipelineStep{
 			&sdkInjectStep{cfg: cfg},
 			&pipeline.ParamMergeStep{},
 			&meegle.StructuredFlagNameNormalizeStep{},
-			&meegle.MeegleValidateStep{},
-			&meegle.SessionStep{},
-			&meegle.McpExecutorStep{CommandsFunc: commandsFunc},
+			&meegle.RuntimeValidateStep{Resolver: resolver},
+			&meegle.RuntimeSessionStep{Resolver: resolver},
+			&meegle.RuntimeExecutorStep{Resolver: resolver},
 			&pipeline.OutputStep{Processor: formatting.DefaultProcessor()},
 		}}, nil
 	}

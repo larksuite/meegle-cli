@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	meegle "github.com/larksuite/meegle-cli/internal/products/meegle"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 )
 
@@ -144,5 +145,26 @@ func TestStatusExitCode(t *testing.T) {
 				t.Errorf("statusExitCode(%+v) = %d, want %d", tc.r, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildStatusResult_ReusesCLIIdentitySnapshot(t *testing.T) {
+	want := meegle.ResolvedIdentity{
+		Host: "snapshot.example.com", Token: "snapshot-token", Source: meegle.SourceExtension,
+	}
+	ctx := meegle.WithCLIIdentity(context.Background(), want)
+	verifyCalls := 0
+	result, err := buildStatusResult(ctx, "profile-that-does-not-need-loading", func(_ context.Context, got meegle.ResolvedIdentity) string {
+		verifyCalls++
+		if got.Token != want.Token || got.Host != want.Host {
+			t.Fatalf("verifier identity = %+v, want startup snapshot %+v", got, want)
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("buildStatusResult() error = %v", err)
+	}
+	if verifyCalls != 1 || !result.Authenticated {
+		t.Fatalf("verifyCalls = %d, result = %+v", verifyCalls, result)
 	}
 }

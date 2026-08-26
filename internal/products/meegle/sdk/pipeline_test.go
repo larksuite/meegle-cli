@@ -25,7 +25,7 @@ func TestNewSDKPipelineFactory(t *testing.T) {
 	}
 	expectedNames := []string{
 		"sdk_inject", "param_merge",
-		"structured_flag_name_normalize", "meegle_validate", "session", "mcp_executor", "output",
+		"structured_flag_name_normalize", "runtime_validate", "runtime_session", "runtime_executor", "output",
 	}
 	if len(pipe.Steps) != len(expectedNames) {
 		t.Fatalf("expected %d steps, got %d", len(expectedNames), len(pipe.Steps))
@@ -56,6 +56,9 @@ func TestSDKInjectStep_SetsOutputConfig(t *testing.T) {
 	}
 	if state.OutputConfig["mcp.server_url"] != "https://meegle.com/mcp_server/v1" {
 		t.Errorf("unexpected server_url: %v", state.OutputConfig["mcp.server_url"])
+	}
+	if state.OutputConfig["session.host"] != "meegle.com" || state.OutputConfig["session.token"] != "my-token" {
+		t.Errorf("shared session was not injected: %#v", state.OutputConfig)
 	}
 }
 

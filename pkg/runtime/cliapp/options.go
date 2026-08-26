@@ -4,6 +4,7 @@
 package cliapp
 
 import (
+	"context"
 	"io"
 	"os"
 
@@ -15,18 +16,27 @@ import (
 )
 
 type Config struct {
-	AppName         string
-	Version         string
-	Setup           registry.RegistrySetup
-	Manager         *registry.RegistryManager
-	Executor        executor.Executor
-	Pipeline        *pipeline.Pipeline
-	PipelineFactory PipelineFactory
-	OutputProcessor *frameworkoutput.Processor
-	Materializer    frameworkadapter.InputMaterializer
-	Stdout          io.Writer
-	Stderr          io.Writer
-	RootCustomizer  RootCommandCustomizer
+	AppName          string
+	Version          string
+	Setup            registry.RegistrySetup
+	Manager          *registry.RegistryManager
+	Executor         executor.Executor
+	Pipeline         *pipeline.Pipeline
+	PipelineFactory  PipelineFactory
+	OutputProcessor  *frameworkoutput.Processor
+	Materializer     frameworkadapter.InputMaterializer
+	Stdout           io.Writer
+	Stderr           io.Writer
+	RootCustomizer   RootCommandCustomizer
+	BeforeExecute    BeforeExecuteHook
+	AfterExecute     AfterExecuteHook
+	ContextDecorator ContextDecorator
+}
+
+// WithContextDecorator decorates only terminal CLI executions. Programmatic
+// Invoke/ExecuteRaw calls intentionally retain their caller-owned context.
+func WithContextDecorator(decorator func(context.Context) context.Context) Option {
+	return func(cfg *Config) { cfg.ContextDecorator = decorator }
 }
 
 type Option func(*Config)
@@ -87,4 +97,11 @@ func WithStderr(stderr io.Writer) Option {
 
 func WithRootCommandCustomizer(customizer RootCommandCustomizer) Option {
 	return func(cfg *Config) { cfg.RootCustomizer = customizer }
+}
+
+func WithExecutionHooks(before BeforeExecuteHook, after AfterExecuteHook) Option {
+	return func(cfg *Config) {
+		cfg.BeforeExecute = before
+		cfg.AfterExecute = after
+	}
 }

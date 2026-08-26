@@ -31,7 +31,7 @@ func FetchOAuthMetadata(ctx context.Context, host string, headers ...http.Header
 		return nil, err
 	}
 	applyHeaders(req, headers...)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := HTTPClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}

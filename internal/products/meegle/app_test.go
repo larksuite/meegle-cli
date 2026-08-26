@@ -5,13 +5,153 @@ package meegle
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	extcredential "github.com/larksuite/meegle-cli/extension/credential"
+	extplatform "github.com/larksuite/meegle-cli/extension/platform"
+	platformruntime "github.com/larksuite/meegle-cli/internal/extension/platform"
+	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
+
+var errActualStartup = errors.New("actual startup sentinel")
+
+type actualStartupCredential struct{}
+
+func (actualStartupCredential) Name() string { return "startup-sentinel" }
+func (actualStartupCredential) ResolveAccount(context.Context) (*extcredential.Account, error) {
+	return nil, errActualStartup
+}
+func (actualStartupCredential) ResolveToken(context.Context, extcredential.TokenSpec) (*extcredential.Token, error) {
+	return nil, nil
+}
+
+type actualStartupPlugin struct{}
+
+func (actualStartupPlugin) Name() string    { return "startup-sentinel" }
+func (actualStartupPlugin) Version() string { return "1.0.0" }
+func (actualStartupPlugin) Capabilities() extplatform.Capabilities {
+	return extplatform.Capabilities{FailurePolicy: extplatform.FailClosed}
+}
+func (actualStartupPlugin) Install(extplatform.Registrar) error { return errActualStartup }
+
+func TestProfileNameFromArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		fallback string
+		want     string
+	}{
+		{name: "separate value", args: []string{"workitem", "list", "--profile", "enterprise"}, fallback: "default", want: "enterprise"},
+		{name: "equals value", args: []string{"--profile=enterprise", "workitem", "list"}, fallback: "default", want: "enterprise"},
+		{name: "last value wins", args: []string{"--profile", "first", "--profile=second"}, fallback: "default", want: "second"},
+		{name: "end of flags", args: []string{"--", "--profile", "ignored"}, fallback: "default", want: "default"},
+		{name: "missing value", args: []string{"--profile"}, fallback: "default", want: "default"},
+		{name: "next flag is not a value", args: []string{"--profile", "--refresh"}, fallback: "default", want: "default"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := profileNameFromArgs(tc.args, tc.fallback); got != tc.want {
+				t.Fatalf("profileNameFromArgs(%v, %q) = %q, want %q", tc.args, tc.fallback, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFinalizePlugins_PreservesBusinessError(t *testing.T) {
+	businessErr := errors.New("business failed")
+	shutdownErr := errors.New("shutdown failed")
+	if got := finalizePlugins(businessErr, shutdownErr); !errors.Is(got, businessErr) {
+		t.Fatalf("finalizePlugins() = %v, want original business error", got)
+	}
+}
+
+func TestFinalizePlugins_ReturnsShutdownErrorAfterSuccessfulCommand(t *testing.T) {
+	shutdownErr := errors.New("shutdown failed")
+	if got := finalizePlugins(nil, shutdownErr); !errors.Is(got, shutdownErr) {
+		t.Fatalf("finalizePlugins() = %v, want shutdown error", got)
+	}
+}
+
+func TestFinalizePlugins_SuccessfulFirstRunYieldsToShutdownError(t *testing.T) {
+	shutdownErr := errors.New("shutdown failed")
+	if got := finalizePlugins(ErrFirstRunSetupComplete, shutdownErr); !errors.Is(got, shutdownErr) {
+		t.Fatalf("finalizePlugins() = %v, want shutdown error after successful first-run setup", got)
+	}
+}
+
+func TestLifecycleCommandError_TreatsSuccessfulFirstRunAsSuccess(t *testing.T) {
+	if got := lifecycleCommandError(ErrFirstRunSetupComplete); got != nil {
+		t.Fatalf("lifecycleCommandError(ErrFirstRunSetupComplete) = %v, want nil", got)
+	}
+	businessErr := errors.New("business failed")
+	if got := lifecycleCommandError(businessErr); !errors.Is(got, businessErr) {
+		t.Fatalf("lifecycleCommandError(business error) = %v, want original error", got)
+	}
+}
+
+func TestExtensionStartupErrorHasStableCodeAndPreservesCause(t *testing.T) {
+	cause := errors.New("plugin install failed with token secret-startup-token")
+	err := extensionStartupError("CLIENT_EXTENSION_INSTALL_FAILED", "failed to install CLI platform extensions", cause)
+	var me *meerrors.MeegleError
+	if !errors.As(err, &me) {
+		t.Fatalf("error type = %T, want *MeegleError", err)
+	}
+	if me.Code != "CLIENT_EXTENSION_INSTALL_FAILED" || me.ExitCode != 1 {
+		t.Fatalf("mapped error = %+v", me)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("startup error does not preserve original cause")
+	}
+	if strings.Contains(me.Message, "secret-startup-token") || me.Message != "failed to install CLI platform extensions" {
+		t.Fatalf("public startup message exposed internal cause: %q", me.Message)
+	}
+}
+
+func TestNewCLIApp_MapsActualExtensionStartupFailures(t *testing.T) {
+	mode := os.Getenv("ACTUAL_STARTUP_FAILURE_HELPER")
+	if mode != "" {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("MEEGLE_HOST", "")
+		t.Setenv("MEEGLE_USER_ACCESS_TOKEN", "")
+		originalArgs := os.Args
+		defer func() { os.Args = originalArgs }()
+		os.Args = []string{"meegle", "workitem", "get"}
+		wantCode := ""
+		switch mode {
+		case "credential":
+			extcredential.Register(actualStartupCredential{})
+			wantCode = "CLIENT_CREDENTIAL_RESOLUTION_FAILED"
+		case "platform":
+			extplatform.Register(actualStartupPlugin{})
+			wantCode = "CLIENT_EXTENSION_INSTALL_FAILED"
+		default:
+			t.Fatalf("unknown helper mode %q", mode)
+		}
+		_, err := NewCLIApp("1.2.3", nil)
+		var me *meerrors.MeegleError
+		if !errors.As(err, &me) || me.Code != wantCode || !errors.Is(err, errActualStartup) {
+			t.Fatalf("NewCLIApp() error = %#v, want code=%s cause=%v", err, wantCode, errActualStartup)
+		}
+		return
+	}
+
+	for _, mode := range []string{"credential", "platform"} {
+		command := exec.Command(os.Args[0], "-test.run=^TestNewCLIApp_MapsActualExtensionStartupFailures$")
+		command.Env = append(os.Environ(), "ACTUAL_STARTUP_FAILURE_HELPER="+mode)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("%s startup helper: %v\n%s", mode, err, output)
+		}
+	}
+}
 
 func TestBuildRegistrySetup_NilHeaders(t *testing.T) {
 	setup := BuildRegistrySetup("example.com", nil)
@@ -37,7 +177,7 @@ func TestBuildRegistrySetup_EmptyHost(t *testing.T) {
 
 func TestRootCustomizerVersionFlagAlias(t *testing.T) {
 	root := &cobra.Command{Use: "meegle"}
-	rootCustomizer(nil, nil, nil)(root, cliapp.RootCommandMetadata{
+	rootCustomizer(nil, nil, nil, platformruntime.Diagnostics{}, ResolvedIdentity{})(root, cliapp.RootCommandMetadata{
 		AppName: "meegle",
 		Version: "1.2.3",
 	})
@@ -51,6 +191,51 @@ func TestRootCustomizerVersionFlagAlias(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stdout.String()); got != "1.2.3" {
 		t.Fatalf("--version output = %q, want %q", got, "1.2.3")
+	}
+}
+
+func TestRootCustomizer_PreservesLegacyStaticCommandSurface(t *testing.T) {
+	root := &cobra.Command{Use: "meegle"}
+	static := &StaticCommands{
+		Auth:       &cobra.Command{Use: "auth"},
+		Config:     &cobra.Command{Use: "config"},
+		Inspect:    &cobra.Command{Use: "inspect"},
+		Completion: &cobra.Command{Use: "completion"},
+		URL:        &cobra.Command{Use: "url"},
+	}
+
+	rootCustomizer(static, nil, nil, platformruntime.Diagnostics{}, ResolvedIdentity{})(root, cliapp.RootCommandMetadata{
+		AppName: "meegle",
+		Version: "1.2.3",
+	})
+
+	var got []string
+	for _, command := range root.Commands() {
+		got = append(got, command.Name())
+	}
+	sort.Strings(got)
+	want := []string{"auth", "completion", "config", "extension", "inspect", "url"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("root commands = %v, want legacy commands plus documented extension command %v", got, want)
+	}
+}
+
+func TestAnnotateStaticCommands_AddsStableSourceAndRisk(t *testing.T) {
+	root := &cobra.Command{Use: "meegle"}
+	status := &cobra.Command{Use: "status", RunE: func(*cobra.Command, []string) error { return nil }}
+	auth := &cobra.Command{Use: "auth"}
+	auth.AddCommand(status)
+	root.AddCommand(auth)
+
+	annotateStaticCommands(root)
+	if got := status.Annotations["command_id"]; got != "static:auth/status" {
+		t.Fatalf("command_id = %q", got)
+	}
+	if got := status.Annotations["command_source"]; got != "static" {
+		t.Fatalf("command_source = %q", got)
+	}
+	if got := status.Annotations["risk_level"]; got != "read" {
+		t.Fatalf("risk_level = %q", got)
 	}
 }
 
