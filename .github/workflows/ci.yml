@@ -35,10 +35,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Full race suite
-        run: go test ./... -race -count=1 -timeout 300s
-      - name: Repeated shuffled extension tests
-        run: go test -shuffle=on -count=3 -timeout 300s ./cmd ./extension/credential ./extension/platform ./extension/transport ./internal/extension/platform ./internal/extension/transport ./internal/products/meegle ./internal/products/meegle/mcpclient ./internal/products/meegle/sdk ./pkg/runtime/cliapp ./pkg/sdk/meegle
+      - run: make test
 
   lint:
     name: Lint
