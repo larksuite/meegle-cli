@@ -289,7 +289,7 @@ func TestNewCommandClient_RegistersMetadataDefinedToolFromToolsList(t *testing.T
 	}
 }
 
-func TestNewCommandClient_ExecutesLocalCLIAPICommand(t *testing.T) {
+func TestNewCommandClient_DoesNotRegisterLocalCLIAPICommands(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		calls.Add(1)
@@ -329,13 +329,13 @@ func TestNewCommandClient_ExecutesLocalCLIAPICommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCommandClient() error = %v", err)
 	}
-	output, err := client.Execute(context.Background(),
-		`meegle ai-handoff create-link --query "summarize" --dry-run --format json`)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if !strings.Contains(string(output), `"dry_run": true`) {
-		t.Fatalf("Execute() output = %s", output)
+	for _, command := range []string{
+		`meegle ai-handoff create-link --query "summarize" --dry-run --format json`,
+		`meegle preference handoff auto --dry-run --format json`,
+	} {
+		if _, err := client.Execute(context.Background(), command); err == nil {
+			t.Fatalf("Execute(%q) succeeded; local CLI API commands must not be registered in the SDK", command)
+		}
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("MCP calls = %d, want discovery only", calls.Load())

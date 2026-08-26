@@ -13,8 +13,8 @@ import (
 	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
 
-// sdkInjectStep pre-injects the shared command session plus the MCP endpoint.
-// Backend runtimes consume the shared session without reading CLI profiles.
+// sdkInjectStep pre-injects the MCP endpoint used by the Facade command-string
+// SDK. This SDK is MCP-only and must not expose local CLI API commands.
 type sdkInjectStep struct {
 	cfg *ClientConfig
 }
@@ -31,14 +31,8 @@ func (s *sdkInjectStep) Execute(ctx context.Context, state *pipeline.PipelineCon
 	state.OutputConfig["mcp.token"] = token
 	state.OutputConfig["mcp.server_url"] = s.cfg.serverURL()
 	state.OutputConfig["mcp.injected"] = true
-	state.OutputConfig["session.host"] = s.cfg.Host
-	state.OutputConfig["session.headers"] = s.cfg.Headers
-	state.OutputConfig["session.token"] = token
-	state.OutputConfig["session.injected"] = true
 	if s.cfg.UserAgent != "" {
-		userAgent := s.cfg.buildUserAgent()
-		state.OutputConfig["mcp.user_agent"] = userAgent
-		state.OutputConfig["session.user_agent"] = userAgent
+		state.OutputConfig["mcp.user_agent"] = s.cfg.buildUserAgent()
 	}
 	return nil
 }
@@ -50,10 +44,13 @@ func newSDKPipelineFactory(cfg *ClientConfig, setup *meegle.DynamicRegistrySetup
 	if setup != nil {
 		commandsFunc = setup.MappedCommands
 	}
-	session := &meegle.SessionStep{}
+	// Keep the SDK runtime MCP-only even though the npm CLI configures both MCP
+	// and CLI API runtimes. The registry above this pipeline contains only
+	// dynamically discovered MCP commands, so a CLI API runtime is deliberately
+	// absent here.
 	resolver := meegle.NewCommandRuntimeResolver(
-		&meegle.MCPRuntime{Session: session, CommandsFunc: commandsFunc},
-		&meegle.CLIAPIRuntime{Session: session},
+		&meegle.MCPRuntime{CommandsFunc: commandsFunc},
+		nil,
 	)
 	return func(appCfg cliapp.Config) (*pipeline.Pipeline, error) {
 		return &pipeline.Pipeline{Steps: []pipeline.PipelineStep{

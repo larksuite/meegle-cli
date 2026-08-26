@@ -849,9 +849,10 @@ escape sequences retain their backslash.
 This decoding only applies to programmatic command-string entry points such as
 `CommandClient.Execute` and `ExecuteCommandString`. The `meegle` binary receives
 an argument array from the shell, so normal shell quoting rules apply there.
-The command-string SDK registers both MCP-discovered commands and local CLI API
-commands, including `ai-handoff` and `preference handoff`; direct `CallTool`
-continues to address MCP tools only.
+The command-string Go SDK used by Facade for remote RPC execution registers only
+MCP-discovered commands. Local CLI API commands such as `ai-handoff` and
+`preference handoff` are available only in the npm-distributed `meegle` CLI;
+direct `CallTool` also continues to address MCP tools only.
 
 ## Authentication
 

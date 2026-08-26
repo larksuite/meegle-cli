@@ -818,8 +818,9 @@ meegle inspect workitem.create
 该解码只作用于 `CommandClient.Execute`、`ExecuteCommandString` 等程序化
 命令字符串入口。`meegle` 二进制直接接收 shell 解析后的参数数组，因此仍遵循
 对应 shell 的引号和转义规则。
-命令字符串 SDK 会同时注册 MCP 动态发现命令和本地 CLI API 命令，包括
-`ai-handoff` 与 `preference handoff`；直接调用 `CallTool` 时仍然只访问 MCP tool。
+供 Facade 远程 RPC 调用的命令字符串 Go SDK 只注册 MCP 动态发现命令。
+`ai-handoff`、`preference handoff` 等本地 CLI API 命令只在 npm 分发的
+`meegle` CLI 中提供；直接调用 `CallTool` 时也仍然只访问 MCP tool。
 
 ## 认证
 
