@@ -8,7 +8,7 @@
 
 Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=readme&utm_campaign=meegle_cli) ([Lark Project](https://project.feishu.cn?utm_source=github&utm_medium=readme&utm_campaign=meegle_cli)). Manage work items, schedules, and data from your terminal — no browser needed.
 
-[Install](#installation) · [Quick Start](#quick-start-human-users) · [Agent Skill](#ai-agent-skill) · [Commands](#commands) · [Auth](#authentication) · [Config](#configuration) · [Security](#security--risk-warnings) · [Contributing](#contributing)
+[Install](#installation) · [Quick Start](#quick-start-human-users) · [Agent Skill](#ai-agent-skill) · [Commands](#commands) · [Enterprise Extensions](#enterprise-cli-extensions) · [Auth](#authentication) · [Config](#configuration) · [Security](#security--risk-warnings) · [Contributing](#contributing)
 
 ## Why Meegle CLI?
 
@@ -17,6 +17,7 @@ Command-line tool for [Meegle](https://meegle.com?utm_source=github&utm_medium=r
 - **Two-Layer Parameters** — Ergonomic `--flag-name` for everyday use, fallback `--params <json>` for complex payloads like `fields[]` — pick the right granularity per call
 - **Flexible Output** — `json` / `table` / `ndjson` / `raw`, with `--select` dot-path projection for piping to other tools
 - **Secure by Default** — OS keychain credential storage, `${VAR}` env-var templating so secrets never land in config files, multi-profile switching for staging / prod
+- **Enterprise-Extensible** — Build a company distribution without forking this repository by importing the public `cmd`, Credential, Transport, and Platform packages at compile time
 
 ## Features
 
@@ -54,6 +55,26 @@ npx @lark-project/meegle@latest install
 ```
 
 The wizard installs or upgrades the CLI globally, installs the AI Agent Skill, configures the Meegle host, and starts login.
+
+### Automatic update prompt
+
+The npm-distributed CLI checks npm for a newer version at most once every 24 hours when it starts in an interactive terminal. When an update is available, it reads the released `Added` and `Changed` entries between the installed and latest versions from the [CHANGELOG](https://github.com/larksuite/meegle-cli/blob/main/CHANGELOG.md#changed), then shows an interactive prompt:
+
+```text
+✨ Meegle CLI update available: v<current> → v<latest>
+
+What's new:
+  v<version>
+    • Added: <feature summary>
+
+❯ Update now (recommended)
+  Remind me later
+  Use ↑/↓ to select, then press Enter
+```
+
+Pressing Enter first upgrades the CLI with `npm install -g @lark-project/meegle@latest`, then makes a best-effort attempt to upgrade the Meegle Agent Skill through the same installer used by `meegle install`, and finally continues the original command. A missing or incompatible Skill installer, or a Skill download failure, never changes a successful CLI upgrade into a failure. Choosing **Remind me later** defers the next check for 24 hours. This lightweight update does not reconfigure the host or trigger login; use `meegle install` when you want the full setup wizard.
+
+The check is skipped for non-interactive/CI execution, piped stdout, `install`, and shell-completion commands, so structured command output remains unchanged. Set `MEEGLE_NO_UPDATE_CHECK=1` to disable it explicitly.
 
 ## Quick Start (Human Users)
 
@@ -243,6 +264,69 @@ The agent consults the skill, picks the right `meegle` commands, and runs them f
 | `wbs reset-draft` | Reset a draft to match the published instance, discarding unpublished changes |
 | `wbs get-draft-progress` | Get the execution progress of a WBS draft operation (create / edit / publish) |
 | `wbs list-element-templates` | List element templates (resource nodes and tasks) from the flow resource library |
+
+### ai-handoff — AI Assistant Handoff
+
+These commands are registered locally in the CLI and are not MCP tools. `availability` is an optional preflight before preparing `query` or related context; an expected business rejection is a successful probe and includes stable `reject_code` and display-only `reject_msg` fields. Dependency and transport failures use the standard CLI error model.
+
+`availability` reads the Handoff section of the generic `GET /goapi/v5/meeglecli/config` discovery response, including its `mode` (`off`, `ask`, or `auto`). The complete successful config snapshot is cached locally per profile for up to 1 hour; dependency or transport errors are never cached. The config cache is invalidated immediately on a successful `preference handoff auto|ask|off`, on `auth login`, and whenever `create-link` is rejected server-side. `create-link` never reads the cache: it always re-validates server-side and creates the link directly.
+
+The create-link HTTP response always includes `available`: success returns HTTP 200 with `available=true` and `url`; the CLI then replaces only that URL's host (including the configured port) with the active login host, preserving its scheme, path, query, and fragment. This keeps links in the currently selected Meegle or Lark Project environment. An expected business rejection returns HTTP 200 with `available=false`, `reject_code`, and `reject_msg`, and clears the local config cache. Unexpected failures use the standard API error response.
+
+Set `MEEGLE_AI_HANDOFF=disabled` to hard-disable Handoff in the local installation. Both `availability` and a valid `create-link` invocation then return `available=false` with `reject_code=LOCAL_DISABLED` and a display-only `reject_msg`; they do not require authentication, read the CLI configuration cache, or call the Handoff API. Unset values and values other than `disabled` preserve the normal server-controlled behavior. This local gate can only disable the feature—it cannot override the server business switch, entitlement, or personal preference to enable it.
+
+| Command | Description |
+|---------|-------------|
+| `ai-handoff availability` | Check the business switch, rollout, AI entitlement, personal preference, and link-service readiness |
+| `ai-handoff create-link` | Create an AI assistant link from required `--query` and optional, repeatable typed `--related-context` JSON objects |
+
+```bash
+meegle ai-handoff availability --format json
+
+MEEGLE_AI_HANDOFF=disabled meegle ai-handoff availability --format json
+
+meegle ai-handoff create-link --params '{
+  "query": "Summarize the risks and propose next actions",
+  "related_context": [{
+    "type": 3,
+    "work_item": {
+      "project_key": "PROJ",
+      "work_item_type_key": "story",
+      "work_item_id": "123"
+    }
+  }]
+}' --format json
+
+meegle ai-handoff create-link --help
+meegle inspect ai-handoff create-link
+```
+
+Each `related_context` item must set `type` and exactly one matching payload. The facade contract uses business identifiers and never exposes the AI service's generic `key`; facade fills that field only while converting to the internal `query + entities` contract:
+
+| Type | Payload | Required fields | Optional fields |
+|------|---------|-----------------|-----------------|
+| `1` Project | `project` | `project_key` | — |
+| `3` WorkItem | `work_item` | `project_key`, `work_item_type_key`, `work_item_id` | — |
+| `4` View | `view` | `project_key`, `view_id` | `work_item_type_key` |
+| `5` MeasureChart | `measure_chart` | `project_key`, `chart_id` | — |
+
+Context type `2` is reserved by the IDL for the currently unsupported WorkItemType context and must not be used.
+
+Each attempt is bounded by a per-attempt timeout, and transient transport failures (timeout, HTTP 5xx/429, network errors) are retried up to 3 times with exponential backoff and jitter. `create-link` sends a stable idempotency key that is reused across those retries, so a retried request never creates a second link. Policy, validation, and 4xx errors fail fast without retrying. Facade invalid-parameter envelopes are reported as `HANDOFF_API_INVALID_PARAM` with `retryable=false`, including payloads that exceed the negotiated query or context limits. Internal Facade biz error IDs, causes, and chains are not exposed; the CLI returns a concise message plus a suggestion to inspect the current limits with `ai-handoff availability`.
+
+### preference — Personal Preferences
+
+Handoff suggestion mode is stored in the server-side unified user preference service. It has no project or tenant argument and defaults to `auto` when no override exists. The generic write request carries a `preferences` list with `type=handoff_suggestions`; its payload is `{"mode":"off|ask|auto"}`. A successful mode update invalidates the local `ai-handoff availability` cache.
+
+| Command | Description |
+|---------|-------------|
+| `preference handoff auto` | Automatically show AI handoff recommendations |
+| `preference handoff ask` | Ask before showing an AI handoff recommendation |
+| `preference handoff off` | Disable AI handoff recommendations |
+
+Use `meegle preference handoff --help` for mode behavior and `meegle inspect preference handoff auto` (or `ask` / `off`) for the command-level parameter view.
+
+`reset` is intentionally not exposed until the preference service provides an atomic unset operation.
 
 ### auth — Authentication
 
@@ -658,6 +742,8 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--auto-paginate` | | Automatically fetch and merge all pages when the response contains pagination signals (`next_page_token` or `pagination.has_more`); merged list arrays are concatenated, and a 200-page safety cap plus a 3-empty-page streak guard prevent runaway loops |
 | `--version` | | Print the CLI version and exit (alias of `meegle version`) |
 
+`--version` is treated as the version alias only when it is a standalone flag. If a preceding string flag is waiting for a value, the literal `--version` remains that flag's value.
+
 ## Advanced Usage
 
 ### Output Formats
@@ -726,6 +812,11 @@ carries the backend trace id (when the server returns one). Hand that id
 to oncall to look up the request in argos. Without `--envelope` the id is
 suppressed so the default output stays clean for piping.
 
+AI handoff Config, Preference, and Create Link responses also copy the gateway
+`x-tt-logid` response header to `meta.logid`. Successful calls expose it only
+with `--envelope`; failures include it in their structured error envelope
+automatically. No debug logging is required.
+
 ### Dry Run
 
 For commands with side effects, preview the rendered request with `--dry-run` before executing:
@@ -758,6 +849,9 @@ escape sequences retain their backslash.
 This decoding only applies to programmatic command-string entry points such as
 `CommandClient.Execute` and `ExecuteCommandString`. The `meegle` binary receives
 an argument array from the shell, so normal shell quoting rules apply there.
+The command-string SDK registers both MCP-discovered commands and local CLI API
+commands, including `ai-handoff` and `preference handoff`; direct `CallTool`
+continues to address MCP tools only.
 
 ## Authentication
 
@@ -840,16 +934,17 @@ Main config options:
 
 ### Sandbox / CI: Direct Environment-Variable Injection
 
-Two well-known environment variables are read directly at CLI startup and override the matching profile fields without requiring any `config set`:
+The following well-known environment variables are read directly by the CLI without requiring any `config set`:
 
 ```bash
 export MEEGLE_HOST=project.feishu.cn
 export MEEGLE_USER_ACCESS_TOKEN=<your-user-token>
 export MEEGLE_USER_AGENT=ci-runner  # optional; appended to User-Agent, highest priority over config.user_agent
+export MEEGLE_AI_HANDOFF=disabled   # optional; locally hard-disable AI Handoff
 meegle workitem get --work-item-id 123
 ```
 
-Either variable may be set independently. When `MEEGLE_USER_ACCESS_TOKEN` is set, the CLI bypasses the keychain and does not attempt to refresh on 401 — the caller is responsible for rotating the env value. Setting only `MEEGLE_HOST` (without a token) still uses the keychain-stored credentials.
+These variables may be set independently. When `MEEGLE_USER_ACCESS_TOKEN` is set, the CLI bypasses the keychain and does not attempt to refresh on 401 — the caller is responsible for rotating the env value. Setting only `MEEGLE_HOST` (without a token) still uses the keychain-stored credentials. `MEEGLE_AI_HANDOFF=disabled` is a disable-only local gate and does not alter profile configuration.
 
 ### Custom Auth Header
 
@@ -883,7 +978,7 @@ If your runtime exposes a variable with a name other than `MEEGLE_*`, bind it th
 
 Rules:
 - Only whole-string placeholders are recognized. `"${X}"` is expanded; `"Bearer ${X}"` is treated as a literal.
-- When a referenced variable is unset or empty, the CLI fails fast and reports the field path and variable name.
+- When a referenced variable is unset or empty, commands that require credentials fail fast and report the field path and variable name. Recovery entry points such as `--help`, `version`, `auth login --help`, and `config set` remain available so the profile can be repaired.
 - When `user_access_token` is configured, it takes precedence over any token stored locally by `meegle auth login`. Because this mode has no refresh path, rotate the environment value yourself when the server returns 401.
 
 ### Multi-Environment Profiles
@@ -909,6 +1004,22 @@ meegle mywork todo --action this_week --page-num 1 --profile staging
 # Delete a profile
 meegle config profile delete staging
 ```
+
+## Enterprise CLI Extensions
+
+Companies can depend on this Go module, register trusted in-process adapters, and build their own `meegle` binary without modifying the official repository. V1 supports three extension seams:
+
+- `extension/credential` selects an account and supplies an existing Meegle user token. Known local/recovery commands bootstrap without invoking Credential providers, so a slow OIDC provider cannot block help, version, configuration repair, completion, URL parsing, or extension diagnostics; commands that need identity still resolve the provider and fail closed on any provider error.
+- `extension/transport` observes or blocks CLI HTTP requests while retaining redirect and TLS-downgrade protections. Provider and hook callbacks have a 30-second safety timeout, but the real MCP, OAuth, and attachment request keeps the caller's Context and original HTTP client timeout, so enabling an extension does not shorten large uploads, downloads, or slow server operations. Its trusted in-process pre-hook sees the credential-injected live request and can technically change authentication headers; the CLI does not provide in-process isolation or freeze header values. Its post-hook receives an isolated metadata snapshot with `http.NoBody` and a cloned TLS state, so a stalled hook cannot consume, retain, or mutate the live response stream. Credential-bearing MCP requests—default Bearer or custom token header—retain a 10-redirect limit and are never redirected away from their exact original origin.
+- `extension/platform` observes, wraps, or restricts both static commands and MCP-discovered dynamic commands. Plugin metadata/Install and each Startup hook have a two-second safety boundary; a timed-out fail-open plugin is skipped, while fail-closed stops the CLI, and late registration is ignored. Restrict plugins must be fail-closed; a hand-written plugin that declares `Restricts=true` with `FailurePolicy=FailOpen` fails startup instead of being silently skipped.
+
+Use `cmd.ExecuteWithVersion(version)` for an enterprise binary whose plugins declare `RequireCLI`; `cmd.Execute()` remains the compatible default entry point. A `dev` build deliberately cannot satisfy a version constraint and its compatibility error points to `ExecuteWithVersion`; this fail-closed check is not bypassed. Extensions are linked at build time—there is no runtime plugin download—and the SDK does not load CLI extension registries. See [all extension examples](./examples/README.md) and the [architecture contract](./docs/design/CLI-EXTENSION-ARCHITECTURE.md).
+
+An extension-enabled binary exposes non-secret diagnostics under `meegle extension doctor|credentials|transport|plugins|policy|discovery`. Credential and transport diagnostics distinguish `not-evaluated`, `active`, and `failed` instead of re-running providers during an offline diagnostic command. Restrict rules also govern these commands, so a readonly allow-list should include `extension/**` when operators need troubleshooting access.
+Policy denials honor explicit structured output modes and use the stable `CLIENT_COMMAND_DENIED` error code. Credential and Platform failures that happen before CLI App construction also honor explicit JSON/NDJSON output and expose `CLIENT_CREDENTIAL_RESOLUTION_FAILED` or `CLIENT_EXTENSION_INSTALL_FAILED` instead of plain text.
+Errors and panic values returned by extension callbacks stay behind a guarded Go error-chain boundary: custom `Is`, `As`, `Unwrap`, `Error`, or payload methods cannot crash the CLI, and panic details cannot enter public output. Extension code should still return ordinary, context-aware errors because it runs as trusted code in the CLI process.
+Every JSON-RPC response is bounded before decoding: `tools/list` uses an 8 MiB discovery limit and all other calls use a 32 MiB per-response limit.
+Dynamic discovery accepts nullable JSON Schema types such as `"type": ["string", "null"]` and exposes them as the underlying CLI/SDK parameter type. Unions containing multiple non-null types are isolated with the stable `unsupported_schema_union` diagnostic instead of silently removing unrelated tools.
 
 ## FAQ
 

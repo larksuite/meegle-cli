@@ -4,7 +4,9 @@
 package router
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	frameworkadapter "github.com/larksuite/meegle-cli/pkg/framework/adapter"
@@ -60,6 +62,62 @@ func TestCommandRouterWrapsUnknownCommandError(t *testing.T) {
 	r := newTestRouter(t)
 	_, err := r.Route(&frameworkadapter.RawInput{Context: context.Background(), Args: []string{"missing", "command"}})
 	assertCLIError(t, err, frameworkerrors.CodeCommandNotFound)
+}
+
+func TestCommandRouterStillRendersValidGroupHelp(t *testing.T) {
+	r := newTestRouter(t)
+	var stdout bytes.Buffer
+	err := r.Execute(&frameworkadapter.RawInput{
+		Context: context.Background(),
+		Args:    []string{"workitem", "--profile", "demo", "--help"},
+		IOMode:  frameworkadapter.IOModeTTY,
+		Stdout:  &stdout,
+	}, nil)
+	if err != nil {
+		t.Fatalf("execute valid group help: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Available Commands:") {
+		t.Fatalf("valid group help missing commands:\n%s", stdout.String())
+	}
+}
+
+func TestCommandRouterCommandGroupWithoutLeafStillShowsHelpSuccessfully(t *testing.T) {
+	r := newTestRouter(t)
+	parsed, err := r.Route(&frameworkadapter.RawInput{
+		Context: context.Background(),
+		Args:    []string{"workitem"},
+		IOMode:  frameworkadapter.IOModeProgrammatic,
+	})
+	if err != nil {
+		t.Fatalf("route command group: %v", err)
+	}
+	if parsed != nil {
+		t.Fatalf("parsed command group = %#v, want nil", parsed)
+	}
+}
+
+func TestCommandRouterHelpIncludesAppNameAndRequiredFlag(t *testing.T) {
+	r := newTestRouter(t)
+	var stdout bytes.Buffer
+	err := r.Execute(&frameworkadapter.RawInput{
+		Context: context.Background(),
+		Args:    []string{"workitem", "create", "--help"},
+		IOMode:  frameworkadapter.IOModeTTY,
+		Stdout:  &stdout,
+	}, nil)
+	if err != nil {
+		t.Fatalf("execute help: %v", err)
+	}
+	for _, fragment := range []string{
+		"Usage:\n  test workitem create [flags]",
+		"--key string",
+		"(required)",
+		"--profile string",
+	} {
+		if !strings.Contains(stdout.String(), fragment) {
+			t.Fatalf("help output missing %q:\n%s", fragment, stdout.String())
+		}
+	}
 }
 
 func TestCommandRouterWrapsUnknownFlagError(t *testing.T) {
@@ -130,27 +188,30 @@ func newTestRouter(t *testing.T) *CommandRouter {
 }
 
 func testRouterTree() *registry.CommandTree {
-	return &registry.CommandTree{Nodes: []*registry.CommandNode{{
-		Name: "workitem",
-		Help: registry.HelpText{Brief: "Manage work items"},
-		Children: []*registry.CommandNode{{
-			Name:       "update",
-			Help:       registry.HelpText{Brief: "Update a work item"},
-			HandlerRef: "core.workitem.update",
-			Args:       []registry.ArgDef{{Name: "id", Required: true}},
-			Flags: []registry.FlagDef{
-				{Name: "query", Type: registry.FlagTypeString},
-				{Name: "limit", Type: registry.FlagTypeInt, Default: 20},
-			},
-		}, {
-			Name:       "create",
-			Help:       registry.HelpText{Brief: "Create a work item"},
-			HandlerRef: "core.workitem.create",
-			Flags: []registry.FlagDef{
-				{Name: "key", Type: registry.FlagTypeString, Required: true},
-			},
+	return &registry.CommandTree{
+		GlobalFlags: []registry.FlagDef{{Name: "profile", Type: registry.FlagTypeString, Description: "Select profile"}},
+		Nodes: []*registry.CommandNode{{
+			Name: "workitem",
+			Help: registry.HelpText{Brief: "Manage work items"},
+			Children: []*registry.CommandNode{{
+				Name:       "update",
+				Help:       registry.HelpText{Brief: "Update a work item"},
+				HandlerRef: "core.workitem.update",
+				Args:       []registry.ArgDef{{Name: "id", Required: true}},
+				Flags: []registry.FlagDef{
+					{Name: "query", Type: registry.FlagTypeString},
+					{Name: "limit", Type: registry.FlagTypeInt, Default: 20},
+				},
+			}, {
+				Name:       "create",
+				Help:       registry.HelpText{Brief: "Create a work item"},
+				HandlerRef: "core.workitem.create",
+				Flags: []registry.FlagDef{
+					{Name: "key", Type: registry.FlagTypeString, Required: true},
+				},
+			}},
 		}},
-	}}}
+	}
 }
 
 func assertCLIError(t *testing.T, err error, code string) {

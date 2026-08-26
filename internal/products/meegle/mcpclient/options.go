@@ -73,9 +73,18 @@ func SetVersion(v string) {
 //  2. debug.ReadBuildInfo().Main.Version (Go module version — SDK consumers
 //     and local `go build` invocations that bypass the Makefile)
 func DefaultUserAgent() string {
-	base := "meegle-cli"
 	if injectedVersion != "" {
-		return base + "/" + injectedVersion
+		return UserAgentForVersion(injectedVersion)
+	}
+	return UserAgentForVersion("")
+}
+
+// UserAgentForVersion returns a CLI-scoped base User-Agent without mutating
+// the process-wide fallback used by SDK clients.
+func UserAgentForVersion(version string) string {
+	base := "meegle-cli"
+	if version != "" && version != "dev" {
+		return base + "/" + version
 	}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		v := info.Main.Version
@@ -84,6 +93,16 @@ func DefaultUserAgent() string {
 		}
 	}
 	return base
+}
+
+// BuildUserAgentForVersion composes an explicit CLI distribution version and
+// optional caller without changing DefaultUserAgent state.
+func BuildUserAgentForVersion(version, caller string) string {
+	base := UserAgentForVersion(version)
+	if caller == "" {
+		return base
+	}
+	return base + " " + caller
 }
 
 // BuildUserAgent returns the full User-Agent string to use for outbound MCP

@@ -111,7 +111,7 @@ func newRequiredValidationCLIApp(t *testing.T) *cliapp.App {
 		cliapp.WithAppName("meegle"),
 		cliapp.WithVersion("test"),
 		cliapp.WithSetup(setup),
-		cliapp.WithPipelineFactory(newPipelineFactory(setup)),
+		cliapp.WithPipelineFactory(newPipelineFactory(setup, nil, nil)),
 	)
 	if err != nil {
 		t.Fatalf("new app: %v", err)

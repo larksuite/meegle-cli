@@ -7,11 +7,14 @@ import (
 	"context"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	frameworkadapter "github.com/larksuite/meegle-cli/pkg/framework/adapter"
+	frameworkerrors "github.com/larksuite/meegle-cli/pkg/framework/errors"
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
 	frameworkoutput "github.com/larksuite/meegle-cli/pkg/framework/output"
 	"github.com/larksuite/meegle-cli/pkg/framework/pipeline"
@@ -26,6 +29,41 @@ import (
 // user doesn't see both the formatted envelope and a plain-text duplicate.
 type AlreadyRenderedError struct{ Err error }
 
+type successfulExitError struct{ err error }
+
+func (e *successfulExitError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *successfulExitError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return frameworkerrors.GuardCause(e.err)
+}
+
+// SuccessfulExit marks successful control flow that should reach the process
+// entry without being rendered as an error envelope.
+func SuccessfulExit(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &successfulExitError{err: err}
+}
+
+// IsSuccessfulExit reports whether err carries a SuccessfulExit marker.
+// Process entry points should map this control flow to exit code zero.
+func IsSuccessfulExit(err error) bool {
+	if err == nil {
+		return false
+	}
+	var marker *successfulExitError
+	return frameworkerrors.SafeAs(err, &marker)
+}
+
 func (e *AlreadyRenderedError) Error() string {
 	if e == nil || e.Err == nil {
 		return ""
@@ -37,7 +75,7 @@ func (e *AlreadyRenderedError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
-	return e.Err
+	return frameworkerrors.GuardCause(e.Err)
 }
 
 type App struct {
@@ -81,10 +119,13 @@ func New(opts ...Option) (*App, error) {
 		}
 	}
 	app.pipe = pipe
+	router.SetBuildFinalizer(func(root *cobra.Command) error {
+		app.customizeRoot(root)
+		return nil
+	})
 	if err := router.Build(app.executeParsed); err != nil {
 		return nil, err
 	}
-	app.customizeRoot(router.RootCommand())
 	return app, nil
 }
 
@@ -100,8 +141,177 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 }
 
 func (a *App) ExecuteWithIO(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	args = normalizeExecutableAliases(a.RootCommand(), args)
+	if a.config.ContextDecorator != nil {
+		if decorated := a.config.ContextDecorator(ctx); decorated != nil {
+			ctx = decorated
+		}
+	}
 	input := &frameworkadapter.RawInput{Args: append([]string(nil), args...), Context: ctx, IOMode: frameworkadapter.IOModeTTY, Stdout: stdout, Stderr: stderr, Source: a.sourceMeta("cli", args)}
-	return a.router.Execute(input, nil)
+	var runErr error
+	if a.config.BeforeExecute != nil {
+		runErr = a.config.BeforeExecute(ctx)
+	}
+	if runErr == nil {
+		runErr = a.router.Execute(input, nil)
+	}
+	if a.config.AfterExecute != nil {
+		if err := a.config.AfterExecute(ctx, runErr); err != nil && (runErr == nil || IsSuccessfulExit(runErr)) {
+			runErr = err
+		}
+	}
+	if IsSuccessfulExit(runErr) {
+		return runErr
+	}
+	var rendered *AlreadyRenderedError
+	if runErr != nil && !frameworkerrors.SafeAs(runErr, &rendered) {
+		var payloadBuilder frameworkoutput.ErrorPayloadBuilder
+		if format, ok := explicitErrorFormat(args); ok && frameworkerrors.SafeAs(runErr, &payloadBuilder) {
+			state := &pipeline.PipelineContext{
+				Input:  input,
+				Parsed: &frameworkrouter.ParsedCommand{Flags: map[string]any{"format": format}},
+			}
+			if a.renderErrorEnvelope(state, runErr) {
+				runErr = &AlreadyRenderedError{Err: runErr}
+			}
+		}
+	}
+	return runErr
+}
+
+// normalizeExecutableAliases keeps legacy top-level flags while routing them
+// through their executable command. Cobra handles --version before RunE,
+// which would otherwise bypass command observers, wrappers, and restrictions.
+func normalizeExecutableAliases(root *cobra.Command, args []string) []string {
+	command := root
+	if root != nil {
+		if found, _, err := root.Find(args); err == nil && found != nil {
+			command = found
+		}
+	}
+	versionFlags := make(map[int]struct{})
+	afterTerminator := false
+	expectsValue := false
+	for index, arg := range args {
+		if arg == "--" {
+			afterTerminator = true
+			expectsValue = false
+			continue
+		}
+		if afterTerminator {
+			continue
+		}
+		if expectsValue {
+			expectsValue = false
+			continue
+		}
+		if isEnabledVersionFlag(arg) {
+			versionFlags[index] = struct{}{}
+			continue
+		}
+		if flagRequiresSeparateValue(command, arg) {
+			expectsValue = true
+		}
+	}
+	if len(versionFlags) == 0 {
+		return args
+	}
+	normalized := make([]string, 0, len(args))
+	normalized = append(normalized, "version")
+	for index, arg := range args {
+		if _, isVersionFlag := versionFlags[index]; isVersionFlag {
+			continue
+		}
+		normalized = append(normalized, arg)
+	}
+	return normalized
+}
+
+func flagRequiresSeparateValue(command *cobra.Command, arg string) bool {
+	if command == nil || strings.Contains(arg, "=") {
+		return false
+	}
+	if name, ok := strings.CutPrefix(arg, "--"); ok && name != "" {
+		flag := command.Flag(name)
+		return flag != nil && flag.NoOptDefVal == ""
+	}
+	if len(arg) != 2 || arg[0] != '-' || arg[1] == '-' {
+		return false
+	}
+	shorthand := string(arg[1])
+	for _, flags := range []*pflag.FlagSet{command.Flags(), command.PersistentFlags(), command.InheritedFlags()} {
+		if flag := flags.ShorthandLookup(shorthand); flag != nil {
+			return flag.NoOptDefVal == ""
+		}
+	}
+	return false
+}
+
+func isEnabledVersionFlag(arg string) bool {
+	if arg == "--version" {
+		return true
+	}
+	value, ok := strings.CutPrefix(arg, "--version=")
+	if !ok {
+		return false
+	}
+	enabled, err := strconv.ParseBool(value)
+	return err == nil && enabled
+}
+
+func explicitErrorFormat(args []string) (string, bool) {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			break
+		}
+		switch {
+		case arg == "--format" || arg == "-o":
+			if index+1 < len(args) {
+				return strings.TrimSpace(args[index+1]), true
+			}
+		case strings.HasPrefix(arg, "--format="):
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--format=")), true
+		case strings.HasPrefix(arg, "-o="):
+			return strings.TrimSpace(strings.TrimPrefix(arg, "-o=")), true
+		}
+	}
+	return "", false
+}
+
+// RenderExplicitError writes a unified error envelope for failures that occur
+// before an App is available, such as product startup or extension bootstrap
+// failures. It returns false when no explicit output format was requested, the
+// error has no stable public payload, or formatting/writing fails; callers can
+// then preserve their existing plain-text fallback.
+func RenderExplicitError(args []string, stderr io.Writer, processor *frameworkoutput.Processor, err error) bool {
+	if err == nil || processor == nil {
+		return false
+	}
+	var payloadBuilder frameworkoutput.ErrorPayloadBuilder
+	if !frameworkerrors.SafeAs(err, &payloadBuilder) {
+		return false
+	}
+	format, ok := explicitErrorFormat(args)
+	if !ok {
+		return false
+	}
+	payload, renderErr := processor.RenderError(&frameworkoutput.Context{
+		Parsed: &frameworkrouter.ParsedCommand{Flags: map[string]any{"format": format}},
+	}, err)
+	if renderErr != nil || len(payload) == 0 || stderr == nil {
+		return false
+	}
+	if _, writeErr := stderr.Write(payload); writeErr != nil {
+		return false
+	}
+	if payload[len(payload)-1] != '\n' {
+		_, _ = stderr.Write([]byte{'\n'})
+	}
+	return true
 }
 
 func (a *App) Invoke(ctx context.Context, args []string) (*executor.RawResult, error) {
@@ -159,6 +369,9 @@ func (a *App) executeParsed(parsed *frameworkrouter.ParsedCommand) error {
 	err := a.pipe.Execute(ctx, state)
 	if err == nil {
 		return nil
+	}
+	if IsSuccessfulExit(err) {
+		return err
 	}
 	if a.renderErrorEnvelope(state, err) {
 		return &AlreadyRenderedError{Err: err}

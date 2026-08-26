@@ -8,6 +8,63 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.21] - 2026-08-26
+
+### Added
+
+- Added an interactive startup update notifier for npm-distributed CLI installs. At most once every 24 hours it checks the latest npm version, summarizes released `Added` and `Changed` entries from the GitHub CHANGELOG, and offers an arrow-key choice between immediate upgrade (recommended and selected by default) or a 24-hour deferral. Immediate upgrade installs the latest CLI first, then best-effort upgrades the Meegle Agent Skill through the existing install-wizard path; an unavailable Skill installer or failed Skill upgrade cannot fail the completed CLI upgrade. Non-interactive/CI, piped-output, install, and shell-completion invocations are skipped, and `MEEGLE_NO_UPDATE_CHECK=1` disables the check explicitly.
+- Added non-MCP `ai-handoff availability` and `ai-handoff create-link` commands to both the CLI binary and programmatic command-string SDK. Availability reads the Handoff section of generic CLI config discovery; expected business rejections use `reject_code`/`reject_msg`, while dependency and transport failures use the standard error model. Successful config snapshots are cached per profile for up to 1 hour. Link creation accepts typed Project/WorkItemType/WorkItem/View/MeasureChart entities, always re-validates server-side, and returns an AI assistant URL.
+- Handoff Config, Preference, and Create Link failures now surface the gateway `x-tt-logid` response header as `meta.logid` in the structured error envelope, so production-package failures can be traced without enabling or exporting debug logs.
+- Successful Handoff Config, Preference, and Create Link calls now retain the same response-header LogID in result metadata, exposing it as `meta.logid` only when `--envelope` is requested while keeping default output unchanged.
+- Create-link responses always include `available`: success returns HTTP 200 with `available=true` and the generated `url`; expected business rejection returns HTTP 200 with `available=false`, `reject_code`, and `reject_msg` and invalidates the local config cache. Unexpected failures continue to use the standard API error model.
+- Added `preference handoff auto|ask|off`, backed by the server-side unified user preference service. The generic batch write API uses `type=handoff_suggestions` with a type-owned `{"mode":"off|ask|auto"}` JSON-string payload and reports only write success; current values are read through CLI config discovery. A successful write invalidates the local CLI config cache.
+- Added the local `MEEGLE_AI_HANDOFF=disabled` hard-disable. It makes `availability` and valid `create-link` invocations return `available=false` with `reject_code=LOCAL_DISABLED` without requiring authentication, reading cached availability, or calling the Handoff API.
+- Added compile-time enterprise CLI extensions without requiring a repository fork: public `cmd.Execute` / `cmd.ExecuteWithVersion` entry points, Credential providers, a single Transport interceptor, and Platform plugins for command observation, wrapping, lifecycle hooks, and restrictions.
+- Added `meegle extension doctor|credentials|transport|plugins|policy|discovery` diagnostics that expose non-secret registration, compatibility, selector, rule, transport-baseline, and isolated dynamic-tool metadata.
+- Added standalone no-extension and enterprise binaries under `examples/`, including public-module build and end-to-end MCP/OAuth/governance coverage.
+- Added wire-level `tools/list` metadata parsing so previously unknown MCP tools with `metadata.resource` and `metadata.method` become executable dynamic commands in both CLI and SDK registries.
+- Dynamic discovery now isolates malformed, oversized, duplicate, flag-conflicting, and static-command-shadowing tools per entry; known fallback paths remain immutable, help text is sanitized, Registry rebuild state is published coherently, and SDK callers can inspect skipped entries through `Client.DiscoveryIssues()`.
+- Unknown tools without metadata now report a stable `missing_mapping` discovery issue in both CLI and SDK diagnostics instead of being silently omitted.
+- Nullable JSON Schema parameter types such as `["string", "null"]` now remain available in CLI and SDK discovery; unions with multiple non-null types report `unsupported_schema_union` without affecting valid sibling tools.
+
+### Changed
+
+- Renamed the Handoff commands to `ai-handoff availability` and `ai-handoff create-link`; the earlier plus-prefixed forms are no longer registered.
+- `ai-handoff create-link` keeps the CLI/facade `user_query/related_context` contract and the CLI flags `--query`/`--related-context`; facade converts it to the AI `query/entities` contract internally. Public context payloads use business identifiers (`project_key`, `work_item_type_key`, `work_item_id`, `view_id`, `chart_id`) instead of exposing AI's generic `key`; View keeps `work_item_type_key` optional.
+- Successful `ai-handoff create-link` responses now replace the returned URL host with the active CLI login host while preserving the scheme, path, query, and fragment.
+- Expanded local-command help with full `meegle` usage paths, required-flag markers, behavior/parameter details, and examples; `meegle inspect` now includes local and nested commands such as `ai-handoff create-link` and `preference handoff auto`.
+
+### Security
+
+- Transport extensions apply a 30-second timeout to provider and hook callbacks without shortening the caller-owned MCP, OAuth, or attachment request lifetime. They retain a 10-redirect limit and HTTPS downgrade protection, including when inherited redirect callbacks mutate both the destination and redirect history. Requests rejected before reaching the base transport now close their bodies, and extension callback panics are converted to controlled failures.
+- MCP requests using a custom token header remove stale static credential headers and reject cross-origin redirects against an immutable source snapshot, so credentials cannot be duplicated or copied to another HTTPS origin.
+- Hand-written Platform plugins that declare command restrictions with a fail-open policy now fail CLI startup before `Install` runs instead of silently disabling all of that plugin's policy rules.
+- Platform metadata/Install and Startup callbacks now have a two-second safety boundary. Fail-open timeouts do not block later plugins, fail-closed timeouts stop execution, and timed-out Install callbacks cannot commit late registrations.
+- Transport pre-hooks that replace a request Body now release both the original and replacement streams; post-hook TLS snapshots deep-clone certificate objects so extensions cannot mutate live response metadata.
+- Extension startup and runtime failures retain safe `errors.Is` / `errors.As` matching without reflecting callback causes or panic values into public output; callback errors whose custom `Is`, `As`, `Unwrap`, `Error`, or payload methods panic are contained at Credential, Transport, Platform, formatter, and process-entry boundaries, while runtime and explicit abort failures expose stable structured error codes.
+
+### Compatibility
+
+- Broken profile variables now produce `CONFIG_ENV_UNRESOLVED` for dynamic business commands with or without a discovery cache, `inspect --profile` consistently uses the selected profile, and extension diagnostics report frozen resolution states instead of re-running providers.
+
+- The no-extension wrapper is regression-tested against the official binary, and the official binary is checked against a pinned `main@6326b7d` contract for legacy help, version, completion, authentication status, output, and exit-code behavior. CLI extensions remain isolated from SDK clients.
+- Restrict policy denials honor explicit structured output modes and expose the stable `CLIENT_COMMAND_DENIED` error envelope.
+- The legacy `--version` flag is routed through the governed `version` command, and destructive WBS publish/reset operations are classified as `high-risk-write` for enterprise policy enforcement.
+- Generated open-source trees are required to pass both `go build ./...` and `go test ./...`; source-only sync tooling and its tests are excluded from the published repository together.
+
+### Fixed
+
+- Tool discovery and server-side CLI configuration caches now share one profile-aware JSON file cache with atomic replacement, preventing concurrent CLI processes from exposing partially written cache files.
+- Remote catalog resources can no longer shadow locally owned root commands such as `ai-handoff` and `preference` and abort the complete CLI startup; conflicting tools are isolated as `reserved_path` discovery issues while unrelated dynamic commands remain available.
+- Map Facade invalid-parameter envelopes, including handoff query/context limit violations, to non-retryable `HANDOFF_API_INVALID_PARAM` errors and replace internal biz error IDs/causes/chains with a concise user-safe message and availability hint.
+- Credential and Platform failures raised before CLI App construction now honor explicit JSON/NDJSON output and retain their stable error codes; the published readonly enterprise policy keeps `extension/**` diagnostics available for troubleshooting.
+- Broken `${VAR}` profile placeholders no longer lock users out of help, version, login help, or configuration repair commands; credential-dependent business commands still fail with `CONFIG_ENV_UNRESOLVED`. Known local/recovery commands also defer Credential Provider resolution, so slow or unavailable OIDC providers no longer block them, while dynamic business commands remain fail-closed on ordinary errors, timeouts, and `BlockError`. A literal `--version` consumed as another flag's value is no longer rewritten as the version command. `dev` builds still reject non-empty `RequireCLI` constraints but now point enterprise developers to `ExecuteWithVersion` in the compatibility error chain.
+- Transport extensions no longer cancel successful HTTP requests when `RoundTrip` returns: delayed `tools/list` and `tools/call` bodies remain readable until closed, invalid URLs produced by pre-hooks fail closed instead of panicking, and post-hooks receive body-free metadata snapshots so timeouts release the live response immediately without a response-body race or connection leak.
+- Credential-bearing MCP requests now freeze the exact original origin for both default Bearer and custom token headers, preventing HTTPS downgrade, port-change, cross-domain forwarding, and multi-hop redirect-history mutation from leaking credentials.
+- Credential redirect guards now retain the standard 10-hop limit even when they install a custom redirect callback; all JSON-RPC responses are bounded before decoding (`tools/list` at 8 MiB, other calls at 32 MiB); Transport post-hooks receive a cloned TLS connection state instead of a pointer into the live response.
+- Multiple Restrict rules now compose as cumulative constraints; wrappers cannot return success after skipping, delaying, or duplicating `next`; a token-only Credential provider cannot hide a broken built-in configuration; first-run setup uses the Profile selected by the Credential provider; first-run completion is treated as success by Shutdown hooks and process entries without hiding fail-closed Shutdown failures; and spaced `RequireCLI` comparators such as `>= 1.2.0` are accepted.
+- Wrappers can no longer turn a non-nil downstream command error into exit 0 by ignoring the result of synchronous or awaited asynchronous `next` calls.
+
 ## [v1.0.20] - 2026-08-20
 
 ### Changed

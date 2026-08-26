@@ -7,8 +7,8 @@ PLATFORMS   := darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/amd64 w
 
 # meegle version is sourced from the npm package.json.
 MEEGLE_VERSION := $(shell node -p "require('./npm/meegle/package.json').version" 2>/dev/null || echo 0.0.0)
-MEEGLE_DEV_LDFLAGS     := -s -w -X main.version=$(MEEGLE_VERSION)+$(GIT_COMMIT)
-MEEGLE_RELEASE_LDFLAGS := -s -w -X main.version=$(MEEGLE_VERSION)
+MEEGLE_DEV_LDFLAGS     := -s -w -X github.com/larksuite/meegle-cli/cmd.version=$(MEEGLE_VERSION)+$(GIT_COMMIT)
+MEEGLE_RELEASE_LDFLAGS := -s -w -X github.com/larksuite/meegle-cli/cmd.version=$(MEEGLE_VERSION)
 
 NPM_BIN := npm/meegle/bin
 NOTICES_DIR := third_party_licenses

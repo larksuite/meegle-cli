@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-type HelpGenerator struct{}
+type HelpGenerator struct {
+	AppName     string
+	GlobalFlags []FlagDef
+}
 
 // Render produces a complete help text for any node regardless of depth.
 // The output follows the canonical layout:
@@ -35,6 +38,13 @@ type HelpGenerator struct{}
 //	<blank line>
 //	Use "<path> [command] --help" for more information about a command.
 func (g *HelpGenerator) Render(node *CommandNode) string {
+	return g.RenderFiltered(node, nil)
+}
+
+// RenderFiltered renders help while allowing the final command tree to hide
+// additional immediate children (for example, enterprise policy decisions
+// applied after the registry was built).
+func (g *HelpGenerator) RenderFiltered(node *CommandNode, include func(*CommandNode) bool) string {
 	if node == nil {
 		return ""
 	}
@@ -53,11 +63,14 @@ func (g *HelpGenerator) Render(node *CommandNode) string {
 	if path == "" {
 		path = node.Name
 	}
-	usage := buildUsageLine(path, node)
+	if appName := strings.TrimSpace(g.AppName); appName != "" {
+		path = appName + " " + path
+	}
+	visible := filteredVisibleChildren(node, include)
+	usage := buildUsageLine(path, node, len(visible) > 0)
 	sections = append(sections, "Usage:\n  "+usage)
 
 	// Available Commands
-	visible := sortedVisibleChildren(node)
 	if len(visible) > 0 {
 		lines := []string{"Available Commands:"}
 		for _, child := range visible {
@@ -104,7 +117,10 @@ func (g *HelpGenerator) Render(node *CommandNode) string {
 	}
 
 	// Global / inherited flags (builtin + tree-level)
-	allGlobal := append(BuiltinFlags, node.InheritedFlags()...)
+	allGlobal := make([]FlagDef, 0, len(BuiltinFlags)+len(g.GlobalFlags))
+	allGlobal = append(allGlobal, BuiltinFlags...)
+	allGlobal = append(allGlobal, g.GlobalFlags...)
+	allGlobal = append(allGlobal, node.InheritedFlags()...)
 	if len(allGlobal) > 0 {
 		lines := []string{"Global Flags:"}
 		for _, flag := range allGlobal {
@@ -142,9 +158,23 @@ func (g *HelpGenerator) Render(node *CommandNode) string {
 	return strings.Join(sections, "\n\n")
 }
 
-func buildUsageLine(path string, node *CommandNode) string {
+func filteredVisibleChildren(node *CommandNode, include func(*CommandNode) bool) []*CommandNode {
+	children := sortedVisibleChildren(node)
+	if include == nil {
+		return children
+	}
+	filtered := children[:0]
+	for _, child := range children {
+		if include(child) {
+			filtered = append(filtered, child)
+		}
+	}
+	return filtered
+}
+
+func buildUsageLine(path string, node *CommandNode, hasVisibleChildren bool) string {
 	parts := []string{path}
-	if len(node.VisibleChildren()) > 0 {
+	if hasVisibleChildren {
 		parts = append(parts, "[command]")
 	}
 	for _, arg := range node.Args {
@@ -174,6 +204,12 @@ func formatFlagLine(flag FlagDef) string {
 		suffix = " " + flag.Type
 	}
 	desc := strings.TrimSpace(flag.Description)
+	if flag.Required {
+		if desc != "" {
+			desc += " "
+		}
+		desc += "(required)"
+	}
 	if len(flag.Enum) > 0 {
 		desc += fmt.Sprintf(" (%s)", strings.Join(flag.Enum, "|"))
 	}

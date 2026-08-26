@@ -95,12 +95,12 @@ var fallbackTable = map[string]fallbackEntry{
 }
 
 func MapTool(tool types.ToolDefinition) types.MappedCommand {
-	if tool.Metadata != nil && tool.Metadata.Resource != "" && tool.Metadata.Method != "" {
-		return types.MappedCommand{
-			Resource: tool.Metadata.Resource, Method: tool.Metadata.Method,
-			ToolName: tool.Name, Description: tool.Description, Parameters: tool.Parameters,
-		}
+	if tool.Issue != nil {
+		return types.MappedCommand{}
 	}
+	// Known tools keep their built-in public path. Server metadata extends the
+	// command surface; it must not remap an existing command to a static or
+	// otherwise unrelated path.
 	if entry, ok := fallbackTable[tool.Name]; ok {
 		desc := tool.Description
 		if entry.description != "" {
@@ -112,8 +112,50 @@ func MapTool(tool types.ToolDefinition) types.MappedCommand {
 			Parameters: tool.Parameters, HasFields: entry.hasFields,
 		}
 	}
+	if tool.Metadata != nil && tool.Metadata.Resource != "" && tool.Metadata.Method != "" {
+		return types.MappedCommand{
+			Resource: tool.Metadata.Resource, Method: tool.Metadata.Method,
+			ToolName: tool.Name, Description: tool.Description, Parameters: tool.Parameters,
+		}
+	}
 	// Unmapped tools are not exposed
 	return types.MappedCommand{}
+}
+
+// IsFallbackTool reports whether name has a stable built-in CLI mapping.
+// Callers use it when resolving duplicate dynamic paths so a server-defined
+// alias cannot displace the compatibility mapping of a known tool.
+func IsFallbackTool(name string) bool {
+	_, ok := fallbackTable[name]
+	return ok
+}
+
+// FallbackToolNames returns every compatibility-mapped MCP tool in stable
+// order. Risk classification and other complete directories use this list to
+// detect additions or removals instead of maintaining an unchecked copy.
+func FallbackToolNames() []string {
+	names := make([]string, 0, len(fallbackTable))
+	for name := range fallbackTable {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// FallbackToolForPath returns the deterministic owner of a built-in command
+// path. Server-defined aliases may not occupy these compatibility paths even
+// when the canonical tool is absent from the current tools/list response.
+func FallbackToolForPath(resource, method string) (string, bool) {
+	owner := ""
+	for name, entry := range fallbackTable {
+		if entry.resource != resource || entry.method != method {
+			continue
+		}
+		if owner == "" || name < owner {
+			owner = name
+		}
+	}
+	return owner, owner != ""
 }
 
 func MapTools(tools []types.ToolDefinition) []types.MappedCommand {

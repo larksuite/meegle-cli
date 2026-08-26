@@ -63,7 +63,7 @@ func RegisterClient(ctx context.Context, endpoint, redirectURI string, headers .
 	}
 	req.Header.Set("Content-Type", "application/json")
 	applyHeaders(req, headers...)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := HTTPClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}

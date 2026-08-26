@@ -4,7 +4,6 @@
 package errors
 
 import (
-	stderrs "errors"
 	"fmt"
 	"strings"
 )
@@ -38,7 +37,7 @@ func (e *CLIError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
-	return e.Cause
+	return GuardCause(e.Cause)
 }
 
 func (e *CLIError) ExitCode() int {
@@ -69,7 +68,7 @@ func As(err error) *CLIError {
 		return nil
 	}
 	var cliErr *CLIError
-	if stderrs.As(err, &cliErr) {
+	if SafeAs(err, &cliErr) {
 		return cliErr
 	}
 	return nil
@@ -91,7 +90,7 @@ func Render(err error, verbose bool) string {
 	}
 	cliErr := As(err)
 	if cliErr == nil {
-		return err.Error()
+		return SafeMessage(err, "unexpected error")
 	}
 	message := strings.TrimSpace(cliErr.Message)
 	if message == "" {

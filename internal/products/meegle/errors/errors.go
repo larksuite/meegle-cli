@@ -5,8 +5,9 @@ package errors
 
 import (
 	"encoding/json"
-	stderrors "errors"
 	"strings"
+
+	frameworkerrors "github.com/larksuite/meegle-cli/pkg/framework/errors"
 )
 
 // MeegleError is the base error type for all CLI errors.
@@ -14,8 +15,19 @@ type MeegleError struct {
 	Code       string `json:"error"`
 	Message    string `json:"message"`
 	Suggestion string `json:"suggestion,omitempty"`
+	LogID      string `json:"-"`
 	ExitCode   int    `json:"-"`
 	HTTPStatus int    `json:"-"`
+	Cause      error  `json:"-"`
+}
+
+// Unwrap preserves the original extension/provider error for errors.Is/As
+// while the public payload remains the stable Meegle error contract.
+func (e *MeegleError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return frameworkerrors.GuardCause(e.Cause)
 }
 
 func (e *MeegleError) Error() string {
@@ -55,6 +67,17 @@ func (e *MeegleError) ErrorPayload() map[string]any {
 	return rec
 }
 
+// ErrorMetadata lets the shared output layer surface transport diagnostics in
+// envelope.meta without changing the stable error record. LogID is deliberately
+// metadata rather than part of Message/Suggestion so agents can consume it
+// reliably and normal human-readable output stays concise.
+func (e *MeegleError) ErrorMetadata() map[string]any {
+	if e == nil || strings.TrimSpace(e.LogID) == "" {
+		return nil
+	}
+	return map[string]any{"logid": strings.TrimSpace(e.LogID)}
+}
+
 // WithSuggestion returns the error with a suggestion set.
 func (e *MeegleError) WithSuggestion(s string) *MeegleError {
 	e.Suggestion = s
@@ -64,6 +87,20 @@ func (e *MeegleError) WithSuggestion(s string) *MeegleError {
 // WithHTTPStatus returns the error with an HTTP status code set.
 func (e *MeegleError) WithHTTPStatus(status int) *MeegleError {
 	e.HTTPStatus = status
+	return e
+}
+
+// WithLogID attaches the backend request trace identifier to this error.
+func (e *MeegleError) WithLogID(logID string) *MeegleError {
+	e.LogID = strings.TrimSpace(logID)
+	return e
+}
+
+// WithCause attaches an internal cause without serializing it.
+func (e *MeegleError) WithCause(cause error) *MeegleError {
+	if e != nil {
+		e.Cause = cause
+	}
 	return e
 }
 
@@ -82,7 +119,7 @@ func NewServerError(code, message string) *MeegleError {
 // original 401 response or as AUTH_EXPIRED after a store-token refresh fails.
 func IsUnauthorized(err error) bool {
 	var me *MeegleError
-	if !stderrors.As(err, &me) {
+	if !frameworkerrors.SafeAs(err, &me) {
 		return false
 	}
 	if me.HTTPStatus == 401 {
@@ -100,8 +137,8 @@ func FormatText(err error) string {
 		return ""
 	}
 	var me *MeegleError
-	if !stderrors.As(err, &me) {
-		return err.Error()
+	if !frameworkerrors.SafeAs(err, &me) {
+		return frameworkerrors.SafeMessage(err, "unexpected error")
 	}
 	msg := strings.TrimSpace(me.Message)
 	hint := strings.TrimSpace(me.Suggestion)

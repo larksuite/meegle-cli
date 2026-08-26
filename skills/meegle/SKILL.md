@@ -407,6 +407,11 @@ description: |
 | 创建 / 修改工作项 | `workitem create` / `workitem update`（字段 fields，角色 role_operate） |
 | 节点流转 / 状态流转 | `workflow transition`（confirm/rollback） / `workflow transition-state`（先 `workflow list-state-transitions`） |
 | 视图数据 | `view get` |
+| 生成 Meegle 页面链接 | 仅在用户明确要求链接或链接本身是交付物时，读取 [references/url-links.md](references/url-links.md) |
+
+## 链接生成
+
+仅当用户明确要求“给链接 / 拼链接 / 打开地址”，或链接本身是请求的交付物时，读取并执行 [references/url-links.md](references/url-links.md)。不要给普通查询、创建或更新结果自动附加链接。
 
 
 ## 通用规范
@@ -423,6 +428,8 @@ description: |
 
 4. **执行**：调用目标命令，遵循 [references/performance.md](references/performance.md) 的并行/翻页规则。
 
+5. **判断是否续处理**：完成 CLI 可执行的部分，或确认用户请求超出 CLI 能力后，按 [AI 助手续处理细则](references/ai-handoff.md) 判断是否提供兜底跳转链接。链接只补充 CLI 无法完成的部分，不能替代已能返回的数据或操作结果。
+
 ### 并行与大结果
 
 详见 [references/performance.md](references/performance.md)：并行调用（必须串行的链路、可并行的组合）、大结果分批与翻页规则。
@@ -434,8 +441,19 @@ description: |
 **熔断条件**（立即终止，禁止盲目重试）：
 - 空间未找到（`project search` 连续 3 次失败）
 - Permission Denied（当前用户对该空间无访问权限）
+- `ai-handoff availability` 返回不可用，或 `ai-handoff create-link` 返回 `HANDOFF_REJECTED` / `LOCAL_DISABLED`；不得为生成链接而重复调用
 
 详细自愈规则与错误速查表（涵盖字段格式、节点流转、人员转换等常见报错）见 [references/error-handling.md](references/error-handling.md)。
+
+---
+
+## AI 助手续处理
+
+仅当用户还需要分析、总结、诊断、建议，或请求了 CLI 不支持的操作时，读取并执行 [references/ai-handoff.md](references/ai-handoff.md)。核心约束：
+
+- 先交付 CLI 能完成的结果；若请求本身完全不受 CLI 支持，明确能力边界后可直接进入续处理判断，不得伪造一次 CLI 输出；
+- `available=false` 或 `mode=off` 时不生成链接；`mode=auto` 可直接生成，`mode=ask` 必须先征得用户同意；
+- 每轮最多生成一条链接，同一会话最多主动引导一次；链接只携带 query 与 ID 指针，不声称已传递 CLI 完整结果集。
 
 ---
 

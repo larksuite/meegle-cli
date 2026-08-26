@@ -1,6 +1,6 @@
 {
   "name": "@lark-project/meegle",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "description": "Agent-First CLI for Meegle (Lark Project)",
   "license": "MIT",
   "homepage": "https://github.com/larksuite/meegle-cli#readme",
@@ -29,6 +29,7 @@
   "files": [
     "bin/meegle.js",
     "bin/install-wizard.js",
+    "bin/update-notifier.js",
     "bin/meegle-*",
     "README.md",
     "README.zh-CN.md",
@@ -38,7 +39,8 @@
     "third_party_licenses/**"
   ],
   "scripts": {
-    "prepublishOnly": "cp ../../README.zh-CN.md ./README.zh-CN.md && cp ../../LICENSE ./LICENSE && cp ../../CHANGELOG.md ./CHANGELOG.md && cp ../../THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md && rm -rf ./third_party_licenses && cp -R ../../third_party_licenses ./third_party_licenses && cp ../../README.md ./README.md"
+    "prepublishOnly": "cp ../../README.zh-CN.md ./README.zh-CN.md && cp ../../LICENSE ./LICENSE && cp ../../CHANGELOG.md ./CHANGELOG.md && cp ../../THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md && rm -rf ./third_party_licenses && cp -R ../../third_party_licenses ./third_party_licenses && cp ../../README.md ./README.md",
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "meegle",

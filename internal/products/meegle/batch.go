@@ -106,7 +106,13 @@ func injectBatchCommands(nodes []*registry.CommandNode) {
 			},
 			Flags:      flags,
 			HandlerRef: sibling.HandlerRef,
-			Meta:       registry.NodeMeta{Tags: tags},
+			Meta: registry.NodeMeta{
+				CommandID: "batch:" + bc.Group + "/" + bc.Name,
+				Source:    "batch",
+				Risk:      sibling.Meta.Risk,
+				ToolName:  sibling.HandlerRef,
+				Tags:      tags,
+			},
 		})
 	}
 }

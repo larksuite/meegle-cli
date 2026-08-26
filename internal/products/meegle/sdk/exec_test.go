@@ -5,10 +5,20 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	extcredential "github.com/larksuite/meegle-cli/extension/credential"
+	extplatform "github.com/larksuite/meegle-cli/extension/platform"
+	exttransport "github.com/larksuite/meegle-cli/extension/transport"
 	meegle "github.com/larksuite/meegle-cli/internal/products/meegle"
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
@@ -16,6 +26,26 @@ import (
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
+
+type sdkIsolationCredentialProvider struct{ calls *atomic.Int32 }
+
+func (p sdkIsolationCredentialProvider) Name() string { return "sdk-isolation" }
+func (p sdkIsolationCredentialProvider) ResolveAccount(context.Context) (*extcredential.Account, error) {
+	p.calls.Add(1)
+	return nil, errors.New("SDK used CLI credential extension")
+}
+func (p sdkIsolationCredentialProvider) ResolveToken(context.Context, extcredential.TokenSpec) (*extcredential.Token, error) {
+	p.calls.Add(1)
+	return nil, errors.New("SDK used CLI credential extension")
+}
+
+type sdkIsolationTransportProvider struct{ calls *atomic.Int32 }
+
+func (p sdkIsolationTransportProvider) Name() string { return "sdk-isolation" }
+func (p sdkIsolationTransportProvider) ResolveInterceptor(context.Context) exttransport.Interceptor {
+	p.calls.Add(1)
+	panic("SDK used CLI transport extension")
+}
 
 // stubRegistrySetup returns a fixed command tree for testing.
 type stubRegistrySetup struct{}
@@ -105,6 +135,230 @@ func TestExecuteCommand_HelpCommand(t *testing.T) {
 	if len(out) == 0 {
 		t.Fatal("expected non-empty help output")
 	}
+}
+
+func TestCommandClient_IgnoresAllProcessWideCLIExtensions(t *testing.T) {
+	if runSDKIsolationSubprocess(t) {
+		return
+	}
+	var credentialCalls atomic.Int32
+	var transportCalls atomic.Int32
+	var platformCalls atomic.Int32
+	extcredential.Register(sdkIsolationCredentialProvider{calls: &credentialCalls})
+	exttransport.Register(sdkIsolationTransportProvider{calls: &transportCalls})
+	extplatform.Register(extplatform.NewPlugin("sdk-isolation", "1.0.0").
+		FailClosed().
+		Observer(extplatform.Before, "observe", extplatform.All(), func(context.Context, extplatform.Invocation) {
+			platformCalls.Add(1)
+		}).
+		Wrap("block", extplatform.All(), func(extplatform.Handler) extplatform.Handler {
+			return func(context.Context, extplatform.Invocation) error {
+				platformCalls.Add(1)
+				return errors.New("SDK used CLI platform extension")
+			}
+		}).
+		MustBuild())
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var rpc struct {
+			JSONRPC string `json:"jsonrpc"`
+			ID      int64  `json:"id"`
+			Method  string `json:"method"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&rpc); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		var result any
+		switch rpc.Method {
+		case "tools/list":
+			result = map[string]any{"tools": []any{map[string]any{
+				"name": "get_workitem_brief", "description": "Get work item brief",
+				"inputSchema": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"work_item_id": map[string]any{"type": "number"}},
+					"required":   []string{"work_item_id"},
+				},
+			}}}
+		case "tools/call":
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"ok":true}`}}}
+		default:
+			http.Error(writer, "unexpected method", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": result})
+	}))
+	defer server.Close()
+	previousDefaultClient := http.DefaultClient
+	http.DefaultClient = server.Client()
+	t.Cleanup(func() { http.DefaultClient = previousDefaultClient })
+
+	client, err := NewCommandClient(server.URL, WithToken("sdk-token"))
+	if err != nil {
+		t.Fatalf("new SDK command client: %v", err)
+	}
+	if _, err := client.Execute(context.Background(), `meegle workitem get --work-item-id 123 --format json`); err != nil {
+		t.Fatalf("execute SDK dynamic command: %v", err)
+	}
+	if credentialCalls.Load() != 0 || transportCalls.Load() != 0 || platformCalls.Load() != 0 {
+		t.Fatalf("SDK invoked CLI extensions: credential=%d transport=%d platform=%d",
+			credentialCalls.Load(), transportCalls.Load(), platformCalls.Load())
+	}
+}
+
+func TestNewCommandClient_RegistersMetadataDefinedToolFromToolsList(t *testing.T) {
+	var calledTool string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var rpc struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      int64           `json:"id"`
+			Method  string          `json:"method"`
+			Params  json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&rpc); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		var result any
+		switch rpc.Method {
+		case "tools/list":
+			result = map[string]any{"tools": []any{
+				map[string]any{
+					"name": "enterprise_custom_ping",
+					"metadata": map[string]any{
+						"resource": "enterprise",
+						"method":   "ping",
+					},
+					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+						"query": map[string]any{"type": []string{"string", "null"}},
+					}},
+				},
+				map[string]any{
+					"name":        "invalid_reserved_tool",
+					"description": "must not replace local auth",
+					"metadata":    map[string]any{"resource": "auth", "method": "status"},
+					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+				},
+				map[string]any{
+					"name":        "invalid_name_tool",
+					"description": "must be isolated",
+					"metadata":    map[string]any{"resource": "corp_ops", "method": "run"},
+					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+				},
+			}}
+		case "tools/call":
+			var params struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(rpc.Params, &params); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			calledTool = params.Name
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"ok":true}`}}}
+		default:
+			http.Error(writer, "unexpected method", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": result})
+	}))
+	defer server.Close()
+	previousDefaultClient := http.DefaultClient
+	http.DefaultClient = server.Client()
+	t.Cleanup(func() { http.DefaultClient = previousDefaultClient })
+
+	client, err := NewCommandClient(server.URL, WithToken("sdk-token"))
+	if err != nil {
+		t.Fatalf("NewCommandClient() error = %v", err)
+	}
+	issues := client.DiscoveryIssues()
+	if len(issues) != 2 || issues[0].Code != "reserved_path" || issues[1].Code != "invalid_command" {
+		t.Fatalf("DiscoveryIssues() = %+v, want stable diagnostics for both isolated tools", issues)
+	}
+	output, err := client.Execute(context.Background(), "meegle enterprise ping --query demo --format json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if calledTool != "enterprise_custom_ping" {
+		t.Fatalf("called tool = %q, want enterprise_custom_ping", calledTool)
+	}
+	if !strings.Contains(string(output), `"ok": true`) && !strings.Contains(string(output), `"ok":true`) {
+		t.Fatalf("Execute() output = %s, want successful tool result", output)
+	}
+}
+
+func TestNewCommandClient_ExecutesLocalCLIAPICommand(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		var rpc struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&rpc); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if rpc.Method != "tools/list" {
+			http.Error(writer, "unexpected MCP call", http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      rpc.ID,
+			"result": map[string]any{"tools": []any{map[string]any{
+				"name": "get_workitem_brief",
+				"metadata": map[string]any{
+					"resource": "workitem",
+					"method":   "get",
+				},
+				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+			}}},
+		})
+	}))
+	defer server.Close()
+
+	previousDefaultClient := http.DefaultClient
+	http.DefaultClient = server.Client()
+	t.Cleanup(func() { http.DefaultClient = previousDefaultClient })
+
+	client, err := NewCommandClient(server.URL, WithToken("sdk-token"))
+	if err != nil {
+		t.Fatalf("NewCommandClient() error = %v", err)
+	}
+	output, err := client.Execute(context.Background(),
+		`meegle ai-handoff create-link --query "summarize" --dry-run --format json`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(string(output), `"dry_run": true`) {
+		t.Fatalf("Execute() output = %s", output)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("MCP calls = %d, want discovery only", calls.Load())
+	}
+}
+
+func runSDKIsolationSubprocess(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv("SDK_CLI_EXTENSION_ISOLATION_HELPER") == "1" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCommandClient_IgnoresAllProcessWideCLIExtensions$")
+	command.Env = append(os.Environ(), "SDK_CLI_EXTENSION_ISOLATION_HELPER=1")
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("SDK isolation helper timed out: %v\n%s", ctx.Err(), output)
+	}
+	if err != nil {
+		t.Fatalf("SDK isolation helper failed: %v\n%s", err, output)
+	}
+	return true
 }
 
 func TestExecuteCommand_EmptyCommand(t *testing.T) {

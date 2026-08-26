@@ -28,6 +28,8 @@ type CommandRouter struct {
 	rwMu        sync.RWMutex
 	activeInput *frameworkadapter.RawInput
 	onParsed    func(*ParsedCommand) error
+	executor    func(*ParsedCommand) error
+	finalizer   func(*cobra.Command) error
 }
 
 func NewCommandRouter(manager *registry.RegistryManager, appName string) (*CommandRouter, error) {
@@ -36,7 +38,7 @@ func NewCommandRouter(manager *registry.RegistryManager, appName string) (*Comma
 	}
 	r := &CommandRouter{
 		manager: manager,
-		help:    &registry.HelpGenerator{},
+		help:    &registry.HelpGenerator{AppName: strings.TrimSpace(appName)},
 		appName: appName,
 	}
 	if err := r.Build(nil); err != nil {
@@ -51,9 +53,18 @@ func NewCommandRouter(manager *registry.RegistryManager, appName string) (*Comma
 func (r *CommandRouter) Build(executor func(*ParsedCommand) error) error {
 	r.rwMu.Lock()
 	defer r.rwMu.Unlock()
+	if executor != nil {
+		r.executor = executor
+	} else {
+		executor = r.executor
+	}
 	reg := r.manager.Registry()
 	if reg == nil {
 		return frameworkerrors.New(frameworkerrors.CategoryConfig, frameworkerrors.CodeConfigInvalid, "registry is not initialized")
+	}
+	r.help = &registry.HelpGenerator{
+		AppName:     strings.TrimSpace(r.appName),
+		GlobalFlags: append([]registry.FlagDef(nil), reg.Tree().GlobalFlags...),
 	}
 	root := &cobra.Command{
 		Use:           firstNonEmpty(strings.TrimSpace(r.appName), "app"),
@@ -72,7 +83,14 @@ func (r *CommandRouter) Build(executor func(*ParsedCommand) error) error {
 			defaultHelp(cmd, args)
 			return
 		}
-		_, _ = io.WriteString(cmd.OutOrStdout(), r.help.Render(node))
+		visibility := make(map[string]bool, len(cmd.Commands()))
+		for _, child := range cmd.Commands() {
+			visibility[child.Name()] = !child.Hidden
+		}
+		_, _ = io.WriteString(cmd.OutOrStdout(), r.help.RenderFiltered(node, func(child *registry.CommandNode) bool {
+			visible, exists := visibility[child.Name]
+			return !exists || visible
+		}))
 		_, _ = io.WriteString(cmd.OutOrStdout(), "\n")
 	})
 	for _, flag := range registry.BuiltinFlags {
@@ -84,8 +102,24 @@ func (r *CommandRouter) Build(executor func(*ParsedCommand) error) error {
 	for _, node := range reg.Root().Children {
 		r.registerNode(root, node, executor)
 	}
+	if r.finalizer != nil {
+		if err := r.finalizer(root); err != nil {
+			return err
+		}
+	}
 	r.rootCmd = root
 	return nil
+}
+
+// SetBuildFinalizer installs the final command-tree hook used for both the
+// initial build and every RegistryManager rebuild.
+func (r *CommandRouter) SetBuildFinalizer(finalizer func(*cobra.Command) error) {
+	if r == nil {
+		return
+	}
+	r.rwMu.Lock()
+	defer r.rwMu.Unlock()
+	r.finalizer = finalizer
 }
 
 func (r *CommandRouter) Route(input *frameworkadapter.RawInput) (*ParsedCommand, error) {
@@ -163,6 +197,18 @@ func (r *CommandRouter) registerNode(parent *cobra.Command, node *registry.Comma
 		cmd.FParseErrWhitelist.UnknownFlags = true
 	}
 	cmd.Annotations = map[string]string{"command_path": node.FullPathString()}
+	if node.Meta.CommandID != "" {
+		cmd.Annotations["command_id"] = node.Meta.CommandID
+	}
+	if node.Meta.Source != "" {
+		cmd.Annotations["command_source"] = node.Meta.Source
+	}
+	if node.Meta.Risk != "" {
+		cmd.Annotations["risk_level"] = node.Meta.Risk
+	}
+	if node.Meta.ToolName != "" {
+		cmd.Annotations["tool_name"] = node.Meta.ToolName
+	}
 	for _, flag := range node.Flags {
 		registerFlag(cmd.PersistentFlags(), flag)
 	}
@@ -180,6 +226,27 @@ func (r *CommandRouter) registerNode(parent *cobra.Command, node *registry.Comma
 			parsed, err := r.newParsedCommand(c, nodeCopy, args)
 			if err != nil {
 				return err
+			}
+			// A command wrapper may derive a child context before delegating to
+			// the router-owned RunE. Keep RawInput in sync for the duration of
+			// dynamic pipeline execution so cancellation, deadlines and trace
+			// values reach the same downstream path as static commands.
+			r.rwMu.Lock()
+			active := r.activeInput
+			var previousContext context.Context
+			if active != nil {
+				previousContext = active.Context
+				active.Context = c.Context()
+			}
+			r.rwMu.Unlock()
+			if active != nil {
+				defer func() {
+					r.rwMu.Lock()
+					if r.activeInput == active {
+						active.Context = previousContext
+					}
+					r.rwMu.Unlock()
+				}()
 			}
 			handler := executor
 			r.rwMu.RLock()

@@ -9,8 +9,11 @@ import (
 	stderrors "errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"unicode"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/discovery"
@@ -19,6 +22,48 @@ import (
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 )
+
+var dynamicCommandNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+var reservedDynamicResources = buildReservedDynamicResources()
+
+// buildReservedDynamicResources protects every root command owned by the CLI.
+// Commands installed by the root customizer remain explicit, while roots from
+// the local registry are derived so a future local command cannot be shadowed
+// by an untrusted tools/list entry and make CompositeSetup reject the whole App.
+func buildReservedDynamicResources() map[string]struct{} {
+	resources := map[string]struct{}{
+		"auth": {}, "completion": {}, "config": {}, "extension": {},
+		"help": {}, "inspect": {}, "url": {}, "version": {},
+	}
+	if tree := newMeegleLocalCommandTree(); tree != nil {
+		for _, node := range tree.Nodes {
+			if node == nil {
+				continue
+			}
+			for _, name := range append([]string{node.Name}, node.Aliases...) {
+				if key := strings.ToLower(strings.TrimSpace(name)); key != "" {
+					resources[key] = struct{}{}
+				}
+			}
+		}
+	}
+	return resources
+}
+
+var reservedDynamicFlagNames = map[string]struct{}{
+	"help": {}, "version": {},
+}
+
+// ToolMappingIssue describes one tools/list entry that was deliberately
+// isolated from the command tree. It contains only public tool/path metadata
+// and must never include credentials or request headers.
+type ToolMappingIssue struct {
+	Code     string
+	ToolName string
+	Path     string
+}
 
 // resourceDescriptions provides optional help text for each resource group.
 // It is description-only metadata: lookups fall back to a generated default
@@ -46,12 +91,15 @@ var resourceDescriptions = map[string]string{
 const (
 	discoveryFailureHandlerRef      = "__meegle_tool_discovery_failed__"
 	tagDiscoveryFailure             = "meegle_discovery_failure"
+	tagConfigResolutionFailure      = "meegle_config_resolution_failure"
 	tagRouterAllowUnknownFlags      = "router_allow_unknown_flags"
 	discoveryFailureFallbackVersion = "dynamic-discovery-failed"
 )
 
 // DynamicRegistrySetup builds the command tree via MCP dynamic discovery.
 type DynamicRegistrySetup struct {
+	mu                       sync.RWMutex
+	rebuildMu                sync.Mutex
 	client                   discovery.ToolLister
 	cache                    *ToolCache
 	tokenManager             *auth.TokenManager
@@ -59,9 +107,11 @@ type DynamicRegistrySetup struct {
 	source                   IdentitySource
 	globalFlags              []registry.FlagDef
 	commands                 []types.MappedCommand // populated by Setup, read by pipeline steps
-	authFailed               bool                  // set when tool discovery fails due to 401 (expired/revoked token)
-	forceRefresh             bool                  // when true, bypass fresh cache and fetch from server
-	degradeDiscoveryFailures bool                  // CLI startup only: keep static commands bootable on non-auth discovery errors
+	mappingIssues            []ToolMappingIssue
+	authFailed               bool // set when tool discovery fails due to 401 (expired/revoked token)
+	forceRefresh             bool // when true, bypass fresh cache and fetch from server
+	degradeDiscoveryFailures bool // CLI startup only: keep static commands bootable on non-auth discovery errors
+	bootstrapError           error
 }
 
 // RegistryOption configures optional parameters for DynamicRegistrySetup.
@@ -118,6 +168,15 @@ func WithDiscoveryFailureDegradation(enabled bool) RegistryOption {
 	}
 }
 
+// WithBootstrapError preserves a deferred CLI bootstrap error so business
+// domains remain routable even when no discovery cache exists. Static recovery
+// commands still boot normally.
+func WithBootstrapError(err error) RegistryOption {
+	return func(s *DynamicRegistrySetup) {
+		s.bootstrapError = err
+	}
+}
+
 // IdentitySource reports the source of the active token (for external
 // callers that want to render source-specific hints after Setup runs).
 func (s *DynamicRegistrySetup) IdentitySource() IdentitySource {
@@ -139,32 +198,224 @@ func NewDynamicRegistrySetup(client discovery.ToolLister, cache *ToolCache, opts
 // Returns an error when a client is configured but tool discovery fails,
 // so callers (especially SDK mode) get a clear signal instead of an empty tree.
 func (s *DynamicRegistrySetup) Setup(ctx context.Context) (*registry.CommandTree, error) {
-	tools, err := s.resolveTools(ctx)
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+	if s.bootstrapError != nil {
+		tree := buildConfigResolutionFailureTree(s.bootstrapError)
+		tree.GlobalFlags = s.globalFlags
+		s.publishSnapshot(nil, nil, false)
+		return tree, nil
+	}
+
+	tools, authFailed, err := s.resolveToolsState(ctx)
 	if err != nil {
 		if s.degradeDiscoveryFailures && !isUnauthorizedErr(err) {
-			s.commands = nil
 			tree := buildDiscoveryFailureTree(err)
 			tree.GlobalFlags = s.globalFlags
+			s.publishSnapshot(nil, nil, false)
 			return tree, nil
 		}
 		return nil, err
 	}
-	commands := dynamic.MapTools(tools)
-	s.commands = commands
+	commands, issues := mapAndSanitizeTools(tools, s.globalFlags)
 	tree := buildCommandTree(commands)
 	tree.GlobalFlags = s.globalFlags
+	s.publishSnapshot(commands, issues, authFailed)
 	return tree, nil
+}
+
+func buildConfigResolutionFailureTree(err error) *registry.CommandTree {
+	tree := buildDiscoveryFailureTree(err)
+	for _, node := range tree.Nodes {
+		if node == nil {
+			continue
+		}
+		if node.Meta.Tags == nil {
+			node.Meta.Tags = make(map[string]string)
+		}
+		node.Meta.Tags[tagConfigResolutionFailure] = "1"
+	}
+	return tree
+}
+
+func (s *DynamicRegistrySetup) publishSnapshot(commands []types.MappedCommand, issues []ToolMappingIssue, authFailed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commands = cloneMappedCommands(commands)
+	s.mappingIssues = append([]ToolMappingIssue(nil), issues...)
+	s.authFailed = authFailed
+}
+
+func cloneMappedCommands(commands []types.MappedCommand) []types.MappedCommand {
+	if commands == nil {
+		return nil
+	}
+	cloned := make([]types.MappedCommand, len(commands))
+	for commandIndex, command := range commands {
+		cloned[commandIndex] = command
+		if command.Parameters == nil {
+			continue
+		}
+		cloned[commandIndex].Parameters = make([]types.ToolParameter, len(command.Parameters))
+		for parameterIndex, parameter := range command.Parameters {
+			cloned[commandIndex].Parameters[parameterIndex] = parameter
+			if parameter.Items != nil {
+				items := *parameter.Items
+				cloned[commandIndex].Parameters[parameterIndex].Items = &items
+			}
+		}
+	}
+	return cloned
+}
+
+func mapAndSanitizeTools(tools []types.ToolDefinition, globalFlags []registry.FlagDef) ([]types.MappedCommand, []ToolMappingIssue) {
+	var wireIssues []ToolMappingIssue
+	for _, tool := range tools {
+		if tool.Issue != nil {
+			wireIssues = append(wireIssues, ToolMappingIssue{
+				Code: tool.Issue.Code, ToolName: tool.Name, Path: tool.Issue.Path,
+			})
+			continue
+		}
+		if dynamic.IsFallbackTool(tool.Name) {
+			continue
+		}
+		if tool.Metadata == nil {
+			wireIssues = append(wireIssues, ToolMappingIssue{Code: "missing_mapping", ToolName: tool.Name})
+			continue
+		}
+		if strings.TrimSpace(tool.Metadata.Resource) == "" || strings.TrimSpace(tool.Metadata.Method) == "" {
+			wireIssues = append(wireIssues, ToolMappingIssue{
+				Code: "invalid_tool_definition", ToolName: tool.Name,
+				Path: strings.Trim(tool.Metadata.Resource+"/"+tool.Metadata.Method, "/"),
+			})
+		}
+	}
+	commands, mappingIssues := sanitizeMappedCommands(dynamic.MapTools(tools), globalFlags)
+	return commands, append(wireIssues, mappingIssues...)
 }
 
 // MappedCommands returns the commands from the most recent Setup call.
 func (s *DynamicRegistrySetup) MappedCommands() []types.MappedCommand {
-	return s.commands
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneMappedCommands(s.commands)
+}
+
+// MappingIssues returns deterministic diagnostics for tools/list entries that
+// were rejected without making the complete dynamic registry unavailable.
+func (s *DynamicRegistrySetup) MappingIssues() []ToolMappingIssue {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]ToolMappingIssue(nil), s.mappingIssues...)
+}
+
+func sanitizeMappedCommands(commands []types.MappedCommand, globalFlags []registry.FlagDef) ([]types.MappedCommand, []ToolMappingIssue) {
+	accepted := make([]types.MappedCommand, 0, len(commands))
+	pathIndex := make(map[string]int, len(commands))
+	var issues []ToolMappingIssue
+	issue := func(code string, command types.MappedCommand) {
+		issues = append(issues, ToolMappingIssue{
+			Code: code, ToolName: command.ToolName,
+			Path: strings.Trim(command.Resource+"/"+command.Method, "/"),
+		})
+	}
+
+	for _, command := range commands {
+		if _, reserved := reservedDynamicResources[command.Resource]; reserved {
+			issue("reserved_path", command)
+			continue
+		}
+		if owner, reserved := dynamic.FallbackToolForPath(command.Resource, command.Method); reserved && owner != command.ToolName {
+			issue("reserved_path", command)
+			continue
+		}
+		if !dynamicCommandNamePattern.MatchString(command.Resource) || !dynamicCommandNamePattern.MatchString(command.Method) {
+			issue("invalid_command", command)
+			continue
+		}
+		command.Description = sanitizeHelpText(command.Description)
+		if command.Description == "" {
+			command.Description = "Run dynamic tool"
+		}
+		command.Parameters = append([]types.ToolParameter(nil), command.Parameters...)
+		for index := range command.Parameters {
+			command.Parameters[index].Description = sanitizeHelpText(command.Parameters[index].Description)
+		}
+		parametersValid := true
+		for _, parameter := range command.Parameters {
+			if parameter.Name == "url" {
+				continue
+			}
+			flagName := toFlagName(parameter.Name)
+			if !dynamicCommandNamePattern.MatchString(flagName) {
+				parametersValid = false
+				break
+			}
+			if _, reserved := reservedDynamicFlagNames[flagName]; reserved {
+				parametersValid = false
+				break
+			}
+			for _, globalFlag := range globalFlags {
+				if strings.EqualFold(flagName, globalFlag.Name) {
+					parametersValid = false
+					break
+				}
+			}
+			if !parametersValid {
+				break
+			}
+		}
+		if !parametersValid {
+			issue("invalid_command", command)
+			continue
+		}
+
+		// Validate each untrusted entry independently before it can poison the
+		// aggregate tree. Cross-entry path conflicts are handled below.
+		candidate := buildCommandTree([]types.MappedCommand{command})
+		if validation := registry.ValidateTree(candidate); validation.HasErrors() {
+			issue("invalid_command", command)
+			continue
+		}
+
+		path := command.Resource + "/" + command.Method
+		if _, exists := pathIndex[path]; exists {
+			issue("duplicate_path", command)
+			continue
+		}
+		pathIndex[path] = len(accepted)
+		accepted = append(accepted, command)
+	}
+	return accepted, issues
 }
 
 // AuthFailed reports whether the last Setup call treated the user as
 // unauthenticated because discovery returned a terminal 401.
 func (s *DynamicRegistrySetup) AuthFailed() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.authFailed
+}
+
+func sanitizeHelpText(value string) string {
+	value = ansiEscapePattern.ReplaceAllString(value, "")
+	value = strings.Map(func(char rune) rune {
+		if unicode.IsControl(char) {
+			return ' '
+		}
+		return char
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 // resolveTools fetches the tool list with these rules:
@@ -175,13 +426,20 @@ func (s *DynamicRegistrySetup) AuthFailed() bool {
 //  4. Discovery fails with 401 → existing graceful-degradation path.
 //  5. No client and no usable cache → (nil, nil) for not-logged-in CLI.
 func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDefinition, error) {
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+	tools, _, err := s.resolveToolsState(ctx)
+	return tools, err
+}
+
+func (s *DynamicRegistrySetup) resolveToolsState(ctx context.Context) ([]types.ToolDefinition, bool, error) {
 	// 1. Read cache; remember stale entry as fallback for offline use.
 	var staleTools []types.ToolDefinition
 	if s.cache != nil {
 		result, _ := s.cache.Get()
 		if result != nil && len(result.Tools) > 0 {
 			if !result.Stale && !s.forceRefresh {
-				return result.Tools, nil
+				return result.Tools, false, nil
 			}
 			staleTools = result.Tools
 		}
@@ -204,11 +462,10 @@ func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDe
 				if s.source == SourceStore && s.tokenManager != nil {
 					_, _ = s.tokenManager.ClearTokenIfCurrent(s.activeToken)
 				}
-				s.authFailed = true
-				return nil, nil
+				return nil, true, nil
 			}
 			if meerrors.IsUnauthorized(err) {
-				return nil, meerrors.NewClientError("AUTH_REJECTED",
+				return nil, false, meerrors.NewClientError("AUTH_REJECTED",
 					"token rejected by server during tool discovery").
 					WithSuggestion(meerrors.HintConfigTokenRejected)
 			}
@@ -217,27 +474,27 @@ func (s *DynamicRegistrySetup) resolveTools(ctx context.Context) ([]types.ToolDe
 			if staleTools != nil {
 				fmt.Fprintf(os.Stderr,
 					"[meegle] using stale command cache (server unreachable: %v)\n", err)
-				return staleTools, nil
+				return staleTools, false, nil
 			}
-			return nil, fmt.Errorf("tool discovery failed: %w", err)
+			return nil, false, fmt.Errorf("tool discovery failed: %w", err)
 		}
 		if len(tools) == 0 {
 			if staleTools != nil {
-				return staleTools, nil
+				return staleTools, false, nil
 			}
-			return nil, fmt.Errorf("tool discovery returned empty list")
+			return nil, false, fmt.Errorf("tool discovery returned empty list")
 		}
 		if s.cache != nil {
 			_ = s.cache.Set(tools)
 		}
-		return tools, nil
+		return tools, false, nil
 	}
 
 	// 3. No client (offline / not logged in): keep stale cache if we have it.
 	if staleTools != nil {
-		return staleTools, nil
+		return staleTools, false, nil
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
 func buildDiscoveryFailureTree(err error) *registry.CommandTree {
@@ -351,7 +608,13 @@ func buildCommandTree(commands []types.MappedCommand) *registry.CommandTree {
 				},
 				Flags:      convertParameters(cmd.Parameters),
 				HandlerRef: cmd.ToolName,
-				Meta:       registry.NodeMeta{Tags: tags},
+				Meta: registry.NodeMeta{
+					CommandID: "mcp:" + cmd.ToolName,
+					Source:    "mcp",
+					Risk:      riskForTool(cmd.ToolName),
+					ToolName:  cmd.ToolName,
+					Tags:      tags,
+				},
 			})
 		}
 
@@ -533,7 +796,13 @@ func injectSugarCommands(nodes []*registry.CommandNode) {
 				Help:       registry.HelpText{Brief: sugar.Brief},
 				Flags:      sugar.Flags,
 				HandlerRef: sugar.HandlerRef,
-				Meta:       registry.NodeMeta{Tags: tags},
+				Meta: registry.NodeMeta{
+					CommandID: "sugar:" + sugar.Group + "/" + sugar.Name,
+					Source:    "sugar",
+					Risk:      riskForTool(sugar.HandlerRef),
+					ToolName:  sugar.HandlerRef,
+					Tags:      tags,
+				},
 			})
 			break
 		}

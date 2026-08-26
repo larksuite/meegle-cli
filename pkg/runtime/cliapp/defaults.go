@@ -4,6 +4,7 @@
 package cliapp
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -21,6 +22,9 @@ type RootCommandMetadata struct {
 }
 
 type RootCommandCustomizer func(root *cobra.Command, meta RootCommandMetadata)
+type BeforeExecuteHook func(ctx context.Context) error
+type AfterExecuteHook func(ctx context.Context, runErr error) error
+type ContextDecorator func(ctx context.Context) context.Context
 
 func DefaultOutputProcessor() *frameworkoutput.Processor {
 	return formatter.DefaultProcessor()

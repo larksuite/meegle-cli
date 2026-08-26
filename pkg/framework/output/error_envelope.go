@@ -19,6 +19,12 @@ type ErrorPayloadBuilder interface {
 	ErrorPayload() map[string]any
 }
 
+// ErrorMetadataBuilder exposes diagnostics that belong in envelope.meta rather
+// than in the stable error record, for example a backend request logid.
+type ErrorMetadataBuilder interface {
+	ErrorMetadata() map[string]any
+}
+
 // BuildErrorRecord returns the {code, message, retryable, ...} triple for err,
 // suitable for embedding under the "error" key of the envelope. Resolution
 // order:
@@ -33,13 +39,13 @@ func BuildErrorRecord(err error) map[string]any {
 		return nil
 	}
 	if builder := asPayloadBuilder(err); builder != nil {
-		if rec := builder.ErrorPayload(); rec != nil {
+		if rec := safeErrorPayload(builder); rec != nil {
 			return rec
 		}
 	}
 	rec := map[string]any{
 		"code":      "UNKNOWN",
-		"message":   strings.TrimSpace(err.Error()),
+		"message":   strings.TrimSpace(frameworkerrors.SafeMessage(err, "unexpected error")),
 		"retryable": false,
 	}
 	if cliErr := frameworkerrors.As(err); cliErr != nil {
@@ -64,6 +70,14 @@ func BuildErrorEnvelope(err error, meta map[string]any) map[string]any {
 	if meta == nil {
 		meta = map[string]any{}
 	}
+	if builder := asMetadataBuilder(err); builder != nil {
+		for key, value := range safeErrorMetadata(builder) {
+			// Explicit execution metadata wins if both sources provide a key.
+			if _, exists := meta[key]; !exists {
+				meta[key] = value
+			}
+		}
+	}
 	return map[string]any{
 		"data":  nil,
 		"meta":  meta,
@@ -71,20 +85,43 @@ func BuildErrorEnvelope(err error, meta map[string]any) map[string]any {
 	}
 }
 
-// asPayloadBuilder unwraps err looking for the first implementation of
-// ErrorPayloadBuilder in the error chain. Using errors.As-style walk via the
-// Unwrap() chain keeps product-level MeegleError reachable even when wrapped
-// by a framework CLIError.
-func asPayloadBuilder(err error) ErrorPayloadBuilder {
-	for err != nil {
-		if b, ok := err.(ErrorPayloadBuilder); ok {
-			return b
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return nil
-		}
-		err = u.Unwrap()
+// asMetadataBuilder walks err looking for the first implementation of
+// ErrorMetadataBuilder, using the guarded SafeAs traversal so an untrusted
+// As or Unwrap panic cannot escape the formatting boundary.
+func asMetadataBuilder(err error) ErrorMetadataBuilder {
+	var builder ErrorMetadataBuilder
+	if frameworkerrors.SafeAs(err, &builder) {
+		return builder
 	}
 	return nil
+}
+
+func safeErrorMetadata(builder ErrorMetadataBuilder) (metadata map[string]any) {
+	defer func() {
+		if recover() != nil {
+			metadata = nil
+		}
+	}()
+	return builder.ErrorMetadata()
+}
+
+// asPayloadBuilder safely walks err looking for the first implementation of
+// ErrorPayloadBuilder. The guarded errors.As-style traversal keeps a wrapped
+// product error reachable without letting an untrusted As or Unwrap panic
+// escape the formatting boundary.
+func asPayloadBuilder(err error) ErrorPayloadBuilder {
+	var builder ErrorPayloadBuilder
+	if frameworkerrors.SafeAs(err, &builder) {
+		return builder
+	}
+	return nil
+}
+
+func safeErrorPayload(builder ErrorPayloadBuilder) (record map[string]any) {
+	defer func() {
+		if recover() != nil {
+			record = nil
+		}
+	}()
+	return builder.ErrorPayload()
 }

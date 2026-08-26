@@ -8,7 +8,7 @@
 
 飞书项目（[Meegle](https://meegle.com?utm_source=github&utm_medium=readme&utm_campaign=meegle_cli) / [Lark Project](https://project.feishu.cn?utm_source=github&utm_medium=readme&utm_campaign=meegle_cli)）命令行工具。在终端中管理工作项、查看排期、搜索数据，无需打开浏览器。
 
-[安装](#安装) · [快速开始](#快速开始人类用户) · [Agent Skill](#ai-agent-skill) · [命令](#命令一览) · [认证](#认证) · [配置](#配置) · [安全](#安全与风险提示) · [贡献](#贡献)
+[安装](#安装) · [快速开始](#快速开始人类用户) · [Agent Skill](#ai-agent-skill) · [命令](#命令一览) · [企业扩展](#企业-cli-扩展) · [认证](#认证) · [配置](#配置) · [安全](#安全与风险提示) · [贡献](#贡献)
 
 ## 为什么选择 Meegle CLI？
 
@@ -17,6 +17,7 @@
 - **两层参数模型** — 日常用 `--flag-name` 轻便直接，复杂载荷（如 `fields[]`）用 `--params <json>` 兜底 —— 按场景选择合适粒度
 - **输出格式灵活** — 支持 `json` / `table` / `ndjson` / `raw`，配合 `--select` 点路径投影可直接 pipe 给其他工具
 - **默认安全** — 凭证存进系统 keychain、`${VAR}` 环境变量模板让 secret 不落地到 config 文件、多 profile 分离 staging / prod
+- **支持企业扩展** — 企业通过编译期引用公开的 `cmd`、Credential、Transport、Platform 包构建自己的发行版，无需 Fork 本仓库
 
 ## 功能概览
 
@@ -54,6 +55,26 @@ npx @lark-project/meegle@latest install
 ```
 
 向导会全局安装或升级 CLI、安装 AI Agent Skill、配置 Meegle host，并启动登录。
+
+### 自动更新提示
+
+通过 npm 分发的 CLI 在交互式终端启动时，最多每 24 小时检查一次 npm 最新版本。发现新版本后，会从 [CHANGELOG](https://github.com/larksuite/meegle-cli/blob/main/CHANGELOG.md#changed) 提取当前版本到最新版本之间已经发布的 `Added` 和 `Changed` 条目，并展示交互式功能上新提示：
+
+```text
+✨ Meegle CLI 有新版本: v<当前版本> → v<最新版本>
+
+功能上新:
+  v<版本号>
+    • 新增: <功能摘要>
+
+❯ 立即更新（推荐）
+  稍后提醒
+  使用 ↑/↓ 选择，按 Enter 确认
+```
+
+直接按 Enter 会先执行 `npm install -g @lark-project/meegle@latest` 更新 CLI，再通过 `meegle install` 使用的同一套安装方式 best-effort 更新 Meegle Agent Skill，最后继续原命令。当前环境缺少合适的 Skill 安装器、安装器不兼容或 Skill 下载失败时，只会提示已跳过，不会把成功的 CLI 更新改判为失败。选择**稍后提醒**后，24 小时内不再检查。这个轻量更新流程不会重新配置 host 或触发登录；需要完整的一站式设置时仍可运行 `meegle install`。
+
+非交互/CI 环境、stdout 被管道接走、执行 `install` 或 Shell 补全命令时会跳过检查，保证结构化命令输出不变。也可以设置 `MEEGLE_NO_UPDATE_CHECK=1` 显式关闭。
 
 ## 快速开始（人类用户）
 
@@ -245,6 +266,69 @@ Agent 会参考 skill，自动选择合适的 `meegle` 命令执行。配合 `--
 | `wbs reset-draft` | 将草稿重置为线上实例状态，放弃所有未发布的修改 |
 | `wbs get-draft-progress` | 查询计划表草稿操作（创建 / 编辑 / 发布）的执行进度 |
 | `wbs list-element-templates` | 列出流程资源库中的资源节点与资源任务模板 |
+
+### ai-handoff — AI 助手接力
+
+这组命令由 CLI 本地注册，不属于 MCP tool。`availability` 是准备 `query` 或关联上下文前的可选预检；预期内的业务拒绝属于成功探测，返回稳定的 `reject_code` 和仅用于展示的 `reject_msg`。依赖或传输异常走 CLI 通用错误模型。
+
+`availability` 读取通用 `GET /goapi/v5/meeglecli/config` 探测结果中的 Handoff 配置及其 `mode`（`off`、`ask`、`auto`）。CLI 按 profile 缓存成功返回的完整配置快照至多 1 小时，依赖或传输异常不缓存。`preference handoff auto|ask|off` 成功、`auth login`、以及 `create-link` 被服务端拒绝时会立即失效配置缓存。`create-link` 不读缓存：它始终在服务端二次校验并直接创建链接。
+
+create-link HTTP 响应始终包含 `available`：正常情况返回 HTTP 200 和 `available=true + url`；CLI 随后只把该 URL 的 host（含配置的端口）替换为当前登录域名，保留 scheme、path、query 和 fragment，使链接始终落在当前选择的 Meegle 或飞书项目环境。业务预期内的不可用返回 HTTP 200 和 `available=false + reject_code + reject_msg`，同时清理本地配置缓存；非预期异常走接口通用错误响应。
+
+设置 `MEEGLE_AI_HANDOFF=disabled` 可在当前安装环境中硬禁用 Handoff。此时 `availability` 和参数合法的 `create-link` 都会返回 `available=false`、`reject_code=LOCAL_DISABLED` 及仅用于展示的 `reject_msg`，不要求登录、不读取 availability 缓存，也不调用 Handoff API。未设置或值不是 `disabled` 时保持原有的服务端控制行为。本地门禁只能关闭功能，不能绕过服务端业务开关、权益或个人偏好将功能强制打开。
+
+| 命令 | 说明 |
+|------|------|
+| `ai-handoff availability` | 检查业务开关、灰度、AI 助手权益、个人偏好和链接服务可用性 |
+| `ai-handoff create-link` | 根据必填的 `--query` 和可选、可重复的类型化 `--related-context` JSON 对象生成 AI 助手链接 |
+
+```bash
+meegle ai-handoff availability --format json
+
+MEEGLE_AI_HANDOFF=disabled meegle ai-handoff availability --format json
+
+meegle ai-handoff create-link --params '{
+  "query": "总结风险并给出下一步行动建议",
+  "related_context": [{
+    "type": 3,
+    "work_item": {
+      "project_key": "PROJ",
+      "work_item_type_key": "story",
+      "work_item_id": "123"
+    }
+  }]
+}' --format json
+
+meegle ai-handoff create-link --help
+meegle inspect ai-handoff create-link
+```
+
+每个 `related_context` 元素必须设置 `type`，并且只设置一个与类型匹配的 payload。Facade 契约只使用业务标识，不对外暴露 AI 服务的通用 `key`；只有转换为内部 `query + entities` 契约时才补齐该字段：
+
+| Type | Payload | 必填字段 | 可选字段 |
+|------|---------|----------|----------|
+| `1` Project | `project` | `project_key` | — |
+| `3` WorkItem | `work_item` | `project_key`、`work_item_type_key`、`work_item_id` | — |
+| `4` View | `view` | `project_key`、`view_id` | `work_item_type_key` |
+| `5` MeasureChart | `measure_chart` | `project_key`、`chart_id` | — |
+
+上下文类型 `2` 是 IDL 为当前暂不支持的 WorkItemType 上下文保留的枚举值，请勿使用或复用。
+
+每次尝试都有独立的超时保护，可重试的传输失败（超时、HTTP 5xx/429、网络错误）会以指数退避加抖动的方式最多重试 3 次。`create-link` 会携带一个稳定的幂等键，并在这些重试中保持不变，因此重试不会创建第二条链接。策略、参数校验和 4xx 错误会快速失败，不做重试。Facade 返回的参数错误信封会映射为 `HANDOFF_API_INVALID_PARAM` 且 `retryable=false`，包括 query 或 context 数量超过协商上限的情况。CLI 不暴露 Facade 内部的 biz error id、cause 或 chain，只返回简洁消息，并建议通过 `ai-handoff availability` 查看当前限制。
+
+### preference — 个人偏好
+
+Handoff Suggestions 偏好存储在服务端统一用户偏好服务中，不接收项目或租户参数；不存在用户覆盖值时默认 `auto`。通用偏好写接口使用 `preferences` 列表，当前 item 的 `type=handoff_suggestions`，payload 为 `{"mode":"off|ask|auto"}`；成功仅表示写入完成。读取当前配置统一走 CLI config 探测接口。模式写入成功后会失效本地配置缓存，使变更在下次探测时生效。
+
+| 命令 | 说明 |
+|------|------|
+| `preference handoff auto` | 自动展示 AI Handoff 推荐 |
+| `preference handoff ask` | 展示 AI Handoff 推荐前先询问 |
+| `preference handoff off` | 关闭 AI Handoff 推荐 |
+
+使用 `meegle preference handoff --help` 查看模式行为，使用 `meegle inspect preference handoff auto`（或 `ask` / `off`）查看命令级参数说明。
+
+在偏好服务提供原子 unset 能力前，MVP 不开放 `reset`。
 
 ### auth — 认证域
 
@@ -640,6 +724,8 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--auto-paginate` | | 当响应包含分页信号（`next_page_token` 或 `pagination.has_more`）时自动拉取并合并所有页；列表数组会拼接，200 页安全上限与连续 3 空页保护防止失控循环 |
 | `--version` | | 输出 CLI 版本号并退出（`meegle version` 的别名） |
 
+只有作为独立 Flag 时，`--version` 才表示版本别名；如果前面的字符串 Flag 正在等待参数值，字面量 `--version` 会保留为该 Flag 的值。
+
 ## 进阶用法
 
 ### 输出格式
@@ -698,6 +784,10 @@ meegle workflow update-node --work-item-id 12345 \
 `meta.logid` 里——把这个 id 交给 oncall 就能在 argos 定位到这次请求。
 不加 `--envelope` 时 logid 会被抑制，保持默认输出干净便于管道处理。
 
+AI Handoff 的 Config、Preference、Create Link 响应也会把网关响应头 `x-tt-logid`
+写入 `meta.logid`：成功时仅在指定 `--envelope` 后展示，失败时自动进入结构化错误
+envelope，无需开启 debug 日志。
+
 ### Dry Run
 
 有副作用的命令先用 `--dry-run` 预览请求再执行：
@@ -728,6 +818,8 @@ meegle inspect workitem.create
 该解码只作用于 `CommandClient.Execute`、`ExecuteCommandString` 等程序化
 命令字符串入口。`meegle` 二进制直接接收 shell 解析后的参数数组，因此仍遵循
 对应 shell 的引号和转义规则。
+命令字符串 SDK 会同时注册 MCP 动态发现命令和本地 CLI API 命令，包括
+`ai-handoff` 与 `preference handoff`；直接调用 `CallTool` 时仍然只访问 MCP tool。
 
 ## 认证
 
@@ -809,16 +901,17 @@ meegle config get host
 
 ### 沙盒 / CI：直接注入环境变量
 
-`MEEGLE_HOST` 和 `MEEGLE_USER_ACCESS_TOKEN` 两个约定名环境变量会在 CLI 启动时被直接读取，覆盖 profile 中的同名字段，无需任何 `config set`：
+CLI 会直接读取以下约定名环境变量，无需执行任何 `config set`：
 
 ```bash
 export MEEGLE_HOST=project.feishu.cn
 export MEEGLE_USER_ACCESS_TOKEN=<your-user-token>
 export MEEGLE_USER_AGENT=ci-runner  # 可选；追加到 User-Agent，优先级高于 config.user_agent
+export MEEGLE_AI_HANDOFF=disabled   # 可选；在本地硬禁用 AI Handoff
 meegle workitem get --work-item-id 123
 ```
 
-任一变量可以单独设置。当 `MEEGLE_USER_ACCESS_TOKEN` 设置时，CLI 不访问 keychain，401 错误不会自动 refresh，由调用方自行轮转。仅设置 `MEEGLE_HOST`（不带 token）时仍走 keychain 中存储的凭证。
+各变量可以单独设置。当 `MEEGLE_USER_ACCESS_TOKEN` 设置时，CLI 不访问 keychain，401 错误不会自动 refresh，由调用方自行轮转。仅设置 `MEEGLE_HOST`（不带 token）时仍走 keychain 中存储的凭证。`MEEGLE_AI_HANDOFF=disabled` 只是本地禁用门禁，不修改 profile 配置。
 
 ### 自定义 Auth Header
 
@@ -852,7 +945,7 @@ export MEEGLE_ACCESS_TOKEN_HEADER=x-meegle-auth
 
 规则：
 - 仅识别**整串形态**的占位符。`"${X}"` 会被展开；`"Bearer ${X}"` 按字面量处理，不展开。
-- 引用的环境变量未设置或为空时 CLI **fail fast**，错误信息会带上字段路径和变量名。
+- 引用的环境变量未设置或为空时，需要凭证的业务命令会 **fail fast**，错误信息会带上字段路径和变量名；`--help`、`version`、`auth login --help`、`config set` 等自救入口仍可运行，方便修复 profile。
 - 当配置了 `user_access_token` 时，它会覆盖 `meegle auth login` 在本地 keychain 里写入的令牌。由于这种模式下没有本地 refresh 能力，服务端返回 401 时需要自行轮转环境变量值。
 
 ### 多环境 Profile
@@ -878,6 +971,22 @@ meegle mywork todo --action this_week --page-num 1 --profile staging
 # 删除环境
 meegle config profile delete staging
 ```
+
+## 企业 CLI 扩展
+
+企业可以直接依赖本 Go Module，注册可信的进程内适配器并构建自己的 `meegle` 二进制，无需修改官方仓库。V1 提供三个扩展点：
+
+- `extension/credential` 选择账号，并提供现有的 Meegle 用户 Token。已知的本地/自救命令在启动时不会调用 Credential Provider，因此慢 OIDC Provider 不会阻塞帮助、版本、配置修复、补全、URL 解析或扩展诊断；需要身份的命令仍会解析 Provider，任何 Provider 错误都会 fail-closed。
+- `extension/transport` 观察或阻断 CLI HTTP 请求，同时保留重定向和 TLS 防降级约束。Provider 和 Hook 回调有 30 秒安全超时，但真实 MCP、OAuth 和附件请求继续使用调用方 Context 与原 HTTP Client timeout，因此启用扩展不会截断大文件上传下载或慢服务端操作；可信的进程内前置 Hook 会看到注入凭证后的真实请求，技术上可以修改认证 Header，CLI 不提供进程内隔离也不会冻结 Header 值；后置 Hook 只接收 `Body=http.NoBody`、TLS 状态也已复制的隔离元数据快照，阻塞的 Hook 不会消费、占住或修改真实响应流；携带默认 Bearer 或自定义 Token Header 的 MCP 请求都保留 10 跳上限，且不会被重定向到原始精确 origin 之外。
+- `extension/platform` 观察、包装或限制静态命令和 MCP 动态发现命令。插件元数据/Install 和每个 Startup Hook 都有两秒安全边界；fail-open 插件超时后跳过，fail-closed 会终止 CLI，迟到注册会被忽略。Restrict 插件必须 fail-closed；手写插件如果同时声明 `Restricts=true` 和 `FailurePolicy=FailOpen`，CLI 会启动失败，不会静默跳过策略。
+
+企业插件声明 `RequireCLI` 时，入口应调用 `cmd.ExecuteWithVersion(version)`；`cmd.Execute()` 仍是兼容的默认入口。`dev` 构建会按设计拒绝版本约束，兼容性错误会提示改用 `ExecuteWithVersion`，不会绕过 fail-closed 校验。扩展在编译时链接，不支持运行时下载插件；SDK 也不会加载 CLI 的全局扩展注册表。完整用法见[扩展示例](./examples/README.md)和[架构契约](./docs/design/CLI-EXTENSION-ARCHITECTURE.md)。
+
+扩展版二进制可通过 `meegle extension doctor|credentials|transport|plugins|policy|discovery` 查看脱敏后的诊断信息。Credential 与 Transport 诊断会区分 `not-evaluated`、`active`、`failed`，离线诊断不会为了显示状态而重新调用 Provider。Restrict 同样治理这些命令；需要保留排障入口时，readonly Allow 列表应包含 `extension/**`。
+Policy 拒绝遵循显式结构化输出格式，并使用稳定错误码 `CLIENT_COMMAND_DENIED`。CLI App 构造前发生的 Credential 与 Platform 失败也遵循显式 JSON/NDJSON 输出，分别暴露 `CLIENT_CREDENTIAL_RESOLUTION_FAILED` 或 `CLIENT_EXTENSION_INSTALL_FAILED`，不会退化成纯文本。
+扩展回调返回的 error 和 panic 值会留在受保护的 Go 错误链边界内；自定义 `Is`、`As`、`Unwrap`、`Error` 或错误载荷方法不能让 CLI 崩溃，panic 细节也不会进入公开输出。扩展仍属于进程内可信代码，实现方应返回普通且遵守 Context 的错误。
+所有 JSON-RPC 响应都会在解码前限制大小：`tools/list` 使用 8 MiB 的发现上限，其他调用使用每次响应 32 MiB 的通用上限。
+动态发现支持 `"type": ["string", "null"]` 这类 nullable JSON Schema，并在 CLI/SDK 中按其非 null 类型注册参数。包含多个非 null 类型的 union 会被单项隔离，并输出稳定的 `unsupported_schema_union` 诊断，不影响其他工具。
 
 ## 常见问题
 

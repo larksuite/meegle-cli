@@ -4,11 +4,21 @@
 package meegle
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/attachment"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
+	"github.com/larksuite/meegle-cli/pkg/framework/pipeline"
 )
+
+func TestAttachmentShortcutStep_UsesSessionHTTPClient(t *testing.T) {
+	want := &http.Client{}
+	state := &pipeline.PipelineContext{OutputConfig: map[string]any{"mcp.http_client": want}}
+	if got := (&AttachmentShortcutStep{}).resolveDoer(state); got != want {
+		t.Fatalf("resolved HTTP client = %p, want %p", got, want)
+	}
+}
 
 // attachmentDiscoveryFixture mimics the MappedCommands that dynamic.MapTools
 // produces from MCP discovery for upload_file / get_download_url (via the

@@ -82,11 +82,11 @@ func StartDeviceCodeInit(ctx context.Context, host string, headers ...http.Heade
 	}
 
 	params := url.Values{"client_id": {creds.ClientID}}
-	req, _ := http.NewRequest("POST", metadata.DeviceAuthEndpoint, strings.NewReader(params.Encode()))
+	req, _ := http.NewRequestWithContext(ctx, "POST", metadata.DeviceAuthEndpoint, strings.NewReader(params.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	applyHeaders(req, headers...)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := HTTPClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +172,7 @@ func PollDeviceCodeOnce(ctx context.Context, host, deviceCode, clientID string, 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	applyHeaders(req, headers...)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := HTTPClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -88,7 +88,7 @@ func exchangeToken(ctx context.Context, endpoint string, params url.Values, head
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	applyHeaders(req, headers...)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := HTTPClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}

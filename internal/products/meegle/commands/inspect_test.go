@@ -4,6 +4,7 @@
 package commands
 
 import (
+	"context"
 	"testing"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
@@ -11,7 +12,7 @@ import (
 
 func TestNewInspectCmdWithProviderIsLazy(t *testing.T) {
 	calls := 0
-	cmd := NewInspectCmdWithProvider(func() []types.MappedCommand {
+	cmd := NewInspectCmdWithProvider(func(context.Context) []types.MappedCommand {
 		calls++
 		return nil
 	})
@@ -25,5 +26,17 @@ func TestNewInspectCmdWithProviderIsLazy(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("provider should be called once during execution, got %d calls", calls)
+	}
+}
+
+func TestInspectAcceptsNestedCommandPathAsSeparateArguments(t *testing.T) {
+	cmd := NewInspectCmd([]types.MappedCommand{{
+		Resource:    "preference",
+		Method:      "handoff auto",
+		Description: "Automatically show AI handoff recommendations",
+	}})
+	cmd.SetArgs([]string{"preference", "handoff", "auto"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("inspect nested command: %v", err)
 	}
 }

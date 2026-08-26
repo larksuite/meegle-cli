@@ -14,13 +14,32 @@ import (
 	meegle "github.com/larksuite/meegle-cli/internal/products/meegle"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
+	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
 
 // CommandClient is the programmatic entry point for executing Meegle command strings.
 // It is concurrency-safe and can be shared across goroutines.
 type CommandClient struct {
-	app *cliapp.App
+	app             *cliapp.App
+	discoveryIssues []DiscoveryIssue
+}
+
+// DiscoveryIssue describes one invalid or conflicting tools/list entry that
+// was isolated while the remaining SDK command registry stayed available.
+type DiscoveryIssue struct {
+	Code     string
+	ToolName string
+	Path     string
+}
+
+// DiscoveryIssues returns a snapshot of deterministic, non-secret discovery
+// diagnostics collected when the command client was constructed.
+func (c *CommandClient) DiscoveryIssues() []DiscoveryIssue {
+	if c == nil {
+		return nil
+	}
+	return append([]DiscoveryIssue(nil), c.discoveryIssues...)
 }
 
 // ClientConfig holds all configuration for NewCommandClient.
@@ -178,9 +197,10 @@ func NewCommandClient(host string, opts ...CommandClientOption) (*CommandClient,
 	mcpOpts := cfg.mcpClientOpts()
 
 	client := mcpclient.New(serverURL, mcpOpts...)
-	registrySetup := meegle.NewDynamicRegistrySetup(client, nil,
+	dynamicSetup := meegle.NewDynamicRegistrySetup(client, nil,
 		meegle.WithGlobalFlags(meegle.MeegleGlobalFlags),
 	)
+	registrySetup := registry.NewCompositeSetup(dynamicSetup, meegle.NewMeegleLocalSetup())
 
 	placeholderExec := executor.Func(func(_ context.Context, _ *executor.Request) (*executor.RawResult, error) {
 		return nil, fmt.Errorf("executor not implemented: please execute commands through pipeline steps")
@@ -190,13 +210,20 @@ func NewCommandClient(host string, opts ...CommandClientOption) (*CommandClient,
 		cliapp.WithAppName("meegle"),
 		cliapp.WithSetup(registrySetup),
 		cliapp.WithExecutor(placeholderExec),
-		cliapp.WithPipelineFactory(newSDKPipelineFactory(cfg, registrySetup)),
+		cliapp.WithPipelineFactory(newSDKPipelineFactory(cfg, dynamicSetup)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build CLI app: %w", err)
 	}
 
-	return &CommandClient{app: app}, nil
+	issues := dynamicSetup.MappingIssues()
+	discoveryIssues := make([]DiscoveryIssue, 0, len(issues))
+	for _, issue := range issues {
+		discoveryIssues = append(discoveryIssues, DiscoveryIssue{
+			Code: issue.Code, ToolName: issue.ToolName, Path: issue.Path,
+		})
+	}
+	return &CommandClient{app: app, discoveryIssues: discoveryIssues}, nil
 }
 
 // Execute executes a command string and returns the formatted output bytes.

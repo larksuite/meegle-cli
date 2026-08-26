@@ -8,9 +8,13 @@ import (
 	"context"
 	stderrors "errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	platformruntime "github.com/larksuite/meegle-cli/internal/extension/platform"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/dynamic"
@@ -30,6 +34,33 @@ func (u *unauthorizedLister) ListTools(_ context.Context) ([]types.ToolDefinitio
 		WithHTTPStatus(401)
 }
 
+func TestBuildCommandTree_AnnotatesDerivedCommandSources(t *testing.T) {
+	tree := buildCommandTree([]types.MappedCommand{
+		{Resource: "workitem", Method: "get", ToolName: "get_workitem_brief"},
+		{Resource: "user", Method: "search", ToolName: "search_user_info"},
+		{Resource: "attachment", Method: "prepare-upload", ToolName: "upload_file"},
+		{Resource: "attachment", Method: "prepare-download", ToolName: "get_download_url"},
+	})
+	tests := []struct {
+		group, command, source, risk string
+	}{
+		{group: "workitem", command: "+batch-get", source: "batch", risk: "read"},
+		{group: "user", command: "me", source: "sugar", risk: "read"},
+		{group: "attachment", command: "+upload", source: "attachment", risk: "write"},
+		{group: "attachment", command: "+download", source: "attachment", risk: "read"},
+	}
+	for _, test := range tests {
+		group := findNodeByName(tree.Nodes, test.group)
+		command := findChild(group, test.command)
+		if command == nil {
+			t.Fatalf("command %s/%s missing", test.group, test.command)
+		}
+		if command.Meta.Source != test.source || command.Meta.Risk != test.risk || command.Meta.CommandID == "" || command.Meta.ToolName == "" {
+			t.Errorf("%s/%s metadata = %+v", test.group, test.command, command.Meta)
+		}
+	}
+}
+
 // successLister returns a fixed tool list and counts ListTools calls.
 type successLister struct {
 	tools []types.ToolDefinition
@@ -45,6 +76,37 @@ func (s *successLister) ListTools(_ context.Context) ([]types.ToolDefinition, er
 type errorLister struct {
 	err   error
 	calls int
+}
+
+type mutableLister struct {
+	mu    sync.RWMutex
+	tools []types.ToolDefinition
+	err   error
+}
+
+type blockingLister struct {
+	started chan struct{}
+	release chan struct{}
+	tools   []types.ToolDefinition
+}
+
+func (l *blockingLister) ListTools(context.Context) ([]types.ToolDefinition, error) {
+	close(l.started)
+	<-l.release
+	return l.tools, nil
+}
+
+func (l *mutableLister) ListTools(context.Context) ([]types.ToolDefinition, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return append([]types.ToolDefinition(nil), l.tools...), l.err
+}
+
+func (l *mutableLister) set(tools []types.ToolDefinition, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tools = append([]types.ToolDefinition(nil), tools...)
+	l.err = err
 }
 
 func (e *errorLister) ListTools(_ context.Context) ([]types.ToolDefinition, error) {
@@ -172,7 +234,7 @@ func TestDynamicRegistrySetup_GracefulNoClient(t *testing.T) {
 
 func TestDynamicRegistrySetup_DiscoveryErrorWithoutDegradationHardFails(t *testing.T) {
 	lister := &errorLister{err: stderrors.New("network unreachable")}
-	setup := NewDynamicRegistrySetup(lister, nil)
+	setup := NewDynamicRegistrySetup(lister, nil, WithGlobalFlags(MeegleGlobalFlags))
 
 	_, err := setup.Setup(context.Background())
 	if err == nil {
@@ -275,8 +337,8 @@ func TestCLIApp_DiscoveryErrorStillAllowsStaticCommand(t *testing.T) {
 		cliapp.WithAppName("meegle"),
 		cliapp.WithVersion("test"),
 		cliapp.WithSetup(setup),
-		cliapp.WithPipelineFactory(newPipelineFactory(setup)),
-		cliapp.WithRootCommandCustomizer(rootCustomizer(&StaticCommands{Auth: authCmd}, nil, setup)),
+		cliapp.WithPipelineFactory(newPipelineFactory(setup, nil, nil)),
+		cliapp.WithRootCommandCustomizer(rootCustomizer(&StaticCommands{Auth: authCmd}, nil, setup, platformruntime.Diagnostics{}, ResolvedIdentity{})),
 	)
 	if err != nil {
 		t.Fatalf("expected app bootstrap to succeed, got: %v", err)
@@ -295,6 +357,333 @@ func TestCLIApp_DiscoveryErrorStillAllowsStaticCommand(t *testing.T) {
 	}
 }
 
+func TestCLIApp_DynamicMetadataCannotShadowStaticCommand(t *testing.T) {
+	lister := &successLister{tools: []types.ToolDefinition{
+		{
+			Name:        "remote_auth_status",
+			Description: "Remote command that must not shadow local authentication status",
+			Metadata:    &types.ToolMetadata{Resource: "auth", Method: "status"},
+		},
+		{
+			Name:        "enterprise_ping",
+			Description: "Ping the enterprise extension",
+			Metadata:    &types.ToolMetadata{Resource: "enterprise", Method: "ping"},
+		},
+	}}
+	setup := NewDynamicRegistrySetup(lister, nil, WithGlobalFlags(MeegleGlobalFlags))
+	ran := false
+	authCmd := &cobra.Command{Use: "auth", Short: "Manage authentication"}
+	authCmd.AddCommand(&cobra.Command{
+		Use: "status", Short: "Show local authentication status",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ran = true
+			_, _ = cmd.OutOrStdout().Write([]byte("local auth status\n"))
+			return nil
+		},
+	})
+
+	app, err := cliapp.New(
+		cliapp.WithAppName("meegle"),
+		cliapp.WithVersion("test"),
+		cliapp.WithSetup(setup),
+		cliapp.WithPipelineFactory(newPipelineFactory(setup, nil, nil)),
+		cliapp.WithRootCommandCustomizer(rootCustomizer(&StaticCommands{Auth: authCmd}, nil, setup, platformruntime.Diagnostics{}, ResolvedIdentity{})),
+	)
+	if err != nil {
+		t.Fatalf("build CLI app: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := app.ExecuteWithIO(context.Background(), []string{"auth", "status"}, &stdout, &stderr); err != nil {
+		t.Fatalf("execute static command: %v\nstderr=%s", err, stderr.String())
+	}
+	if !ran || !strings.Contains(stdout.String(), "local auth status") {
+		t.Fatalf("remote metadata shadowed static command: ran=%v stdout=%q", ran, stdout.String())
+	}
+	if findNodeByName(app.Registry().Tree().Nodes, "enterprise") == nil {
+		t.Fatal("valid dynamic tool was lost while rejecting reserved path")
+	}
+	issues := setup.MappingIssues()
+	if len(issues) != 1 || issues[0].Code != "reserved_path" || issues[0].ToolName != "remote_auth_status" {
+		t.Fatalf("mapping issues = %+v, want deterministic reserved_path diagnostic", issues)
+	}
+}
+
+func TestCompositeSetup_RemoteCatalogCannotShadowLocalRoots(t *testing.T) {
+	localTree := newMeegleLocalCommandTree()
+	tools := make([]types.ToolDefinition, 0, len(localTree.Nodes)+1)
+	for _, node := range localTree.Nodes {
+		tools = append(tools, types.ToolDefinition{
+			Name:        "remote_" + strings.ReplaceAll(node.Name, "-", "_"),
+			Description: "Remote command that must not shadow a local root",
+			Metadata:    &types.ToolMetadata{Resource: node.Name, Method: "remote"},
+		})
+	}
+	tools = append(tools, types.ToolDefinition{
+		Name:        "enterprise_ping",
+		Description: "Unrelated dynamic command",
+		Metadata:    &types.ToolMetadata{Resource: "enterprise", Method: "ping"},
+	})
+
+	dynamicSetup := NewDynamicRegistrySetup(&successLister{tools: tools}, nil, WithGlobalFlags(MeegleGlobalFlags))
+	setup := registry.NewCompositeSetup(dynamicSetup, NewMeegleLocalSetup())
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatalf("remote catalog collision must not reject the complete App setup: %v", err)
+	}
+	reg, err := registry.New(tree)
+	if err != nil {
+		t.Fatalf("registry.New() error = %v", err)
+	}
+	for _, node := range localTree.Nodes {
+		if reg.GetByPath(node.Name) == nil {
+			t.Errorf("local root %q was lost", node.Name)
+		}
+		if reg.GetByPath(node.Name+" remote") != nil {
+			t.Errorf("remote catalog shadowed local root %q", node.Name)
+		}
+	}
+	if reg.GetByPath("enterprise ping") == nil {
+		t.Fatal("unrelated dynamic command was lost while isolating collisions")
+	}
+
+	issues := dynamicSetup.MappingIssues()
+	if len(issues) != len(localTree.Nodes) {
+		t.Fatalf("MappingIssues() = %+v, want one reserved_path issue per local root", issues)
+	}
+	for index, node := range localTree.Nodes {
+		if issues[index].Code != "reserved_path" || issues[index].Path != node.Name+"/remote" {
+			t.Errorf("MappingIssues()[%d] = %+v, want reserved local root %q", index, issues[index], node.Name)
+		}
+	}
+}
+
+func TestDynamicRegistrySetup_IsolatesInvalidAndDuplicateTools(t *testing.T) {
+	lister := &successLister{tools: []types.ToolDefinition{
+		{Name: "valid_without_description", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "ping"}},
+		{Name: "invalid_resource", Description: "invalid", Metadata: &types.ToolMetadata{Resource: "corp_ops", Method: "run"}},
+		{Name: "duplicate_path", Description: "duplicate", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "ping"}},
+		{Name: "builtin_flag_conflict", Description: "invalid parameter", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "bad-flags"}, Parameters: []types.ToolParameter{{Name: "format", Type: "string"}}},
+		{Name: "empty_flag_name", Description: "invalid parameter", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "empty-flag"}, Parameters: []types.ToolParameter{{Name: "", Type: "string"}}},
+		{Name: "global_flag_conflict", Description: "invalid parameter", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "bad-global-flag"}, Parameters: []types.ToolParameter{{Name: "profile", Type: "string"}}},
+		{Name: "implicit_flag_conflict", Description: "invalid parameter", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "bad-help-flag"}, Parameters: []types.ToolParameter{{Name: "help", Type: "boolean"}}},
+		{Name: "partial_metadata", Description: "invalid metadata", Metadata: &types.ToolMetadata{Resource: "enterprise"}},
+		{Name: "unknown_without_metadata", Description: "cannot be mapped"},
+	}}
+	setup := NewDynamicRegistrySetup(lister, nil, WithGlobalFlags(MeegleGlobalFlags))
+
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatalf("one invalid tool must not reject the complete tools/list response: %v", err)
+	}
+	enterprise := findNodeByName(tree.Nodes, "enterprise")
+	if enterprise == nil {
+		t.Fatal("valid dynamic resource missing")
+	}
+	ping := findChild(enterprise, "ping")
+	if ping == nil || ping.HandlerRef != "valid_without_description" {
+		t.Fatalf("enterprise/ping = %+v, want first valid tool", ping)
+	}
+	if strings.TrimSpace(ping.Help.Brief) == "" {
+		t.Fatal("missing optional MCP description must receive a safe help fallback")
+	}
+	if findChild(enterprise, "bad-flags") != nil || findChild(enterprise, "empty-flag") != nil || findChild(enterprise, "bad-global-flag") != nil || findChild(enterprise, "bad-help-flag") != nil || findNodeByName(tree.Nodes, "corp_ops") != nil {
+		t.Fatalf("invalid tools leaked into command tree: %+v", tree.Nodes)
+	}
+
+	issues := setup.MappingIssues()
+	if len(issues) != 8 {
+		t.Fatalf("mapping issues = %+v, want one issue per rejected tool", issues)
+	}
+	wantCodes := []string{"invalid_tool_definition", "missing_mapping", "invalid_command", "duplicate_path", "invalid_command", "invalid_command", "invalid_command", "invalid_command"}
+	for i, want := range wantCodes {
+		if issues[i].Code != want {
+			t.Fatalf("issue[%d] = %+v, want code %q", i, issues[i], want)
+		}
+	}
+	if validation := registry.ValidateTree(tree); validation.HasErrors() {
+		t.Fatalf("isolated tree must remain valid: %v", validation)
+	}
+}
+
+func TestDynamicRegistrySetup_SanitizesAcceptedHelpText(t *testing.T) {
+	setup := NewDynamicRegistrySetup(&successLister{tools: []types.ToolDefinition{{
+		Name: "enterprise_help", Description: "Safe\nFORGED\x1b[31m red\u009b31m hidden",
+		Metadata:   &types.ToolMetadata{Resource: "enterprise", Method: "help-text"},
+		Parameters: []types.ToolParameter{{Name: "value", Type: "string", Description: "Value\r\nFAKE\x1b[32m green\u0085next"}},
+	}}}, nil)
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	command := findChild(findNodeByName(tree.Nodes, "enterprise"), "help-text")
+	if command == nil || strings.ContainsAny(command.Help.Brief, "\r\n\x1b\u009b") {
+		t.Fatalf("unsafe command help = %q", command.Help.Brief)
+	}
+	if len(command.Flags) != 1 || strings.ContainsAny(command.Flags[0].Description, "\r\n\x1b\u0085") {
+		t.Fatalf("unsafe flag help = %+v", command.Flags)
+	}
+}
+
+func TestDynamicRegistrySetup_MappedCommandsReturnsDeepCopy(t *testing.T) {
+	setup := NewDynamicRegistrySetup(&successLister{tools: []types.ToolDefinition{{
+		Name: "enterprise_tags", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "tags"},
+		Parameters: []types.ToolParameter{{Name: "tags", Type: "array", Items: &types.ParameterItems{Type: "string"}}},
+	}}}, nil)
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+
+	commands := setup.MappedCommands()
+	commands[0].Parameters[0].Name = "mutated"
+	commands[0].Parameters[0].Items.Type = "number"
+
+	snapshot := setup.MappedCommands()
+	if snapshot[0].Parameters[0].Name != "tags" || snapshot[0].Parameters[0].Items.Type != "string" {
+		t.Fatalf("MappedCommands leaked mutable snapshot state: %+v", snapshot)
+	}
+}
+
+func TestDynamicRegistrySetup_SlowRebuildDoesNotBlockSnapshotReads(t *testing.T) {
+	setup := NewDynamicRegistrySetup(&successLister{tools: []types.ToolDefinition{{
+		Name: "enterprise_ping", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "ping"},
+	}}}, nil)
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatalf("initial Setup() error = %v", err)
+	}
+
+	blocked := &blockingLister{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		tools: []types.ToolDefinition{{
+			Name: "enterprise_pong", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "pong"},
+		}},
+	}
+	setup.client = blocked
+	setupDone := make(chan error, 1)
+	go func() {
+		_, err := setup.Setup(context.Background())
+		setupDone <- err
+	}()
+	<-blocked.started
+
+	readDone := make(chan []types.MappedCommand, 1)
+	go func() { readDone <- setup.MappedCommands() }()
+	select {
+	case commands := <-readDone:
+		if len(commands) != 1 || commands[0].Method != "ping" {
+			t.Fatalf("snapshot during rebuild = %+v, want previous coherent snapshot", commands)
+		}
+	case <-time.After(500 * time.Millisecond):
+		close(blocked.release)
+		<-setupDone
+		t.Fatal("MappedCommands blocked on in-flight discovery")
+	}
+	close(blocked.release)
+	if err := <-setupDone; err != nil {
+		t.Fatalf("rebuild Setup() error = %v", err)
+	}
+}
+
+func TestDynamicRegistrySetup_RebuildPublishesCoherentState(t *testing.T) {
+	lister := &mutableLister{err: meerrors.NewServerError("SERVER_HTTP_ERROR", "unauthorized").WithHTTPStatus(401)}
+	setup := NewDynamicRegistrySetup(lister, nil,
+		WithIdentitySource(SourceEnv), WithDiscoveryFailureDegradation(true), WithGlobalFlags(MeegleGlobalFlags))
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatalf("401 setup: %v", err)
+	}
+	if !setup.AuthFailed() {
+		t.Fatal("401 setup did not publish authFailed")
+	}
+
+	lister.set([]types.ToolDefinition{{Name: "enterprise_ping", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "ping"}}}, nil)
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatalf("successful rebuild: %v", err)
+	}
+	if setup.AuthFailed() || len(setup.MappedCommands()) != 1 {
+		t.Fatalf("successful rebuild state: authFailed=%v commands=%+v", setup.AuthFailed(), setup.MappedCommands())
+	}
+
+	lister.set([]types.ToolDefinition{{Name: "bad", Metadata: &types.ToolMetadata{Resource: "corp_ops", Method: "run"}}}, nil)
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatalf("invalid mapping rebuild: %v", err)
+	}
+	if len(setup.MappingIssues()) != 1 {
+		t.Fatalf("invalid rebuild issues = %+v", setup.MappingIssues())
+	}
+	lister.set(nil, stderrors.New("network unavailable"))
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatalf("degraded rebuild: %v", err)
+	}
+	if setup.AuthFailed() || len(setup.MappedCommands()) != 0 || len(setup.MappingIssues()) != 0 {
+		t.Fatalf("degraded snapshot retained stale state: auth=%v commands=%+v issues=%+v",
+			setup.AuthFailed(), setup.MappedCommands(), setup.MappingIssues())
+	}
+}
+
+func TestDynamicRegistrySetup_ConcurrentRebuildAndSnapshotReads(t *testing.T) {
+	lister := &mutableLister{tools: []types.ToolDefinition{{Name: "enterprise_ping", Metadata: &types.ToolMetadata{Resource: "enterprise", Method: "ping"}}}}
+	setup := NewDynamicRegistrySetup(lister, nil)
+	var wait sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for iteration := 0; iteration < 50; iteration++ {
+				_, _ = setup.Setup(context.Background())
+			}
+		}()
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for iteration := 0; iteration < 200; iteration++ {
+				_ = setup.MappedCommands()
+				_ = setup.MappingIssues()
+				_ = setup.AuthFailed()
+			}
+		}()
+	}
+	wait.Wait()
+}
+
+func TestDynamicRegistrySetup_RejectsFallbackPathAliasWhenCanonicalToolIsAbsent(t *testing.T) {
+	setup := NewDynamicRegistrySetup(&successLister{tools: []types.ToolDefinition{{
+		Name: "server_alias", Description: "attempted alias",
+		Metadata: &types.ToolMetadata{Resource: "workitem", Method: "get"},
+	}}}, nil)
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	if get := findChild(findNodeByName(tree.Nodes, "workitem"), "get"); get != nil {
+		t.Fatalf("server alias occupied immutable fallback path: %+v", get)
+	}
+	issues := setup.MappingIssues()
+	if len(issues) != 1 || issues[0].Code != "reserved_path" || issues[0].ToolName != "server_alias" {
+		t.Fatalf("MappingIssues() = %+v", issues)
+	}
+}
+
+func TestDynamicRegistrySetup_KnownFallbackWinsDuplicatePathRegardlessOfServerOrder(t *testing.T) {
+	lister := &successLister{tools: []types.ToolDefinition{
+		{Name: "server_alias", Description: "attempted alias", Metadata: &types.ToolMetadata{Resource: "workitem", Method: "get"}},
+		{Name: "get_workitem_brief", Description: "known tool"},
+	}}
+	setup := NewDynamicRegistrySetup(lister, nil)
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	get := findChild(findNodeByName(tree.Nodes, "workitem"), "get")
+	if get == nil || get.HandlerRef != "get_workitem_brief" {
+		t.Fatalf("workitem/get = %+v, want built-in compatibility mapping", get)
+	}
+	issues := setup.MappingIssues()
+	if len(issues) != 1 || issues[0].ToolName != "server_alias" || issues[0].Code != "reserved_path" {
+		t.Fatalf("MappingIssues() = %+v", issues)
+	}
+}
+
 func TestCLIApp_DiscoveryErrorDynamicCommandReturnsClearError(t *testing.T) {
 	lister := &errorLister{err: stderrors.New("network unreachable")}
 	setup := NewDynamicRegistrySetup(lister, nil,
@@ -305,7 +694,7 @@ func TestCLIApp_DiscoveryErrorDynamicCommandReturnsClearError(t *testing.T) {
 		cliapp.WithAppName("meegle"),
 		cliapp.WithVersion("test"),
 		cliapp.WithSetup(setup),
-		cliapp.WithPipelineFactory(newPipelineFactory(setup)),
+		cliapp.WithPipelineFactory(newPipelineFactory(setup, nil, nil)),
 	)
 	if err != nil {
 		t.Fatalf("expected app bootstrap to succeed, got: %v", err)

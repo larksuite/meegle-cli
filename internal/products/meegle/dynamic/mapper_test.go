@@ -20,6 +20,18 @@ func TestMapToolMetadata(t *testing.T) {
 	}
 }
 
+func TestMapToolKnownFallbackCannotBeRemappedByServerMetadata(t *testing.T) {
+	tool := types.ToolDefinition{
+		Name:        "get_workitem_brief",
+		Description: "server supplied description",
+		Metadata:    &types.ToolMetadata{Resource: "auth", Method: "status"},
+	}
+	cmd := MapTool(tool)
+	if cmd.Resource != "workitem" || cmd.Method != "get" {
+		t.Fatalf("known tool mapped to %s/%s, want immutable fallback workitem/get", cmd.Resource, cmd.Method)
+	}
+}
+
 func TestMapToolUnmappedReturnsEmpty(t *testing.T) {
 	tool := types.ToolDefinition{Name: "unknown_foo_bar"}
 	cmd := MapTool(tool)

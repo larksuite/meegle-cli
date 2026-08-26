@@ -4,7 +4,6 @@
 package commands
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -241,7 +240,7 @@ func newProfileCmd() *cobra.Command {
 				return err
 			}
 			if shouldLogin {
-				ctx := context.Background()
+				ctx := cmd.Context()
 				tokenData, err := auth.StartAuthCodeFlow(ctx, host)
 				if err != nil {
 					return err

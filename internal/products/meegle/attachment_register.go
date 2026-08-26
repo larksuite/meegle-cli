@@ -151,7 +151,13 @@ func injectAttachmentCommands(nodes []*registry.CommandNode) []*registry.Command
 			Args:       sc.Args,
 			Flags:      sc.Flags,
 			HandlerRef: sibling.HandlerRef, // inherited from the basic prepare-* command
-			Meta:       registry.NodeMeta{Tags: tags},
+			Meta: registry.NodeMeta{
+				CommandID: "attachment:" + group.Name + "/" + sc.Name,
+				Source:    "attachment",
+				Risk:      sibling.Meta.Risk,
+				ToolName:  sibling.HandlerRef,
+				Tags:      tags,
+			},
 		})
 	}
 
@@ -321,7 +327,7 @@ func (s *AttachmentShortcutStep) runUpload(ctx context.Context, state *pipeline.
 	}
 
 	mcp := s.resolveClient(state)
-	doer := s.resolveDoer()
+	doer := s.resolveDoer(state)
 
 	// Inherited from the prepare-upload sibling at injection time. Passing
 	// it explicitly keeps "what tool gets called" anchored to the basic
@@ -355,7 +361,7 @@ func (s *AttachmentShortcutStep) runDownload(ctx context.Context, state *pipelin
 	}
 
 	mcp := s.resolveClient(state)
-	doer := s.resolveDoer()
+	doer := s.resolveDoer(state)
 
 	// Inherited from the prepare-download sibling at injection time.
 	toolName := state.Parsed.Node.HandlerRef
@@ -431,9 +437,14 @@ func (s *AttachmentShortcutStep) resolveClient(state *pipeline.PipelineContext) 
 	return attachmentMCPClientAdapter{inner: newMcpClientFromState(state)}
 }
 
-func (s *AttachmentShortcutStep) resolveDoer() attachment.HTTPDoer {
+func (s *AttachmentShortcutStep) resolveDoer(state *pipeline.PipelineContext) attachment.HTTPDoer {
 	if s.httpFactory != nil {
 		return s.httpFactory()
+	}
+	if state != nil && state.OutputConfig != nil {
+		if client, _ := state.OutputConfig["mcp.http_client"].(*http.Client); client != nil {
+			return client
+		}
 	}
 	return http.DefaultClient
 }

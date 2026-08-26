@@ -5,7 +5,9 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,69 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestStartDeviceCodeInit_UsesContextHTTPClientForEveryRequest(t *testing.T) {
+	var paths []string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		var body string
+		switch req.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			body = `{"issuer":"https://oauth.example","authorization_endpoint":"https://oauth.example/authorize","token_endpoint":"https://oauth.example/token","registration_endpoint":"https://oauth.example/register","device_authorization_endpoint":"https://oauth.example/device"}`
+		case "/register":
+			body = `{"client_id":"client-1"}`
+		case "/device":
+			body = `{"device_code":"device-1","user_code":"CODE","verification_uri":"https://oauth.example/verify","expires_in":600,"interval":5}`
+		default:
+			t.Fatalf("unexpected OAuth request: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	result, err := StartDeviceCodeInit(WithHTTPClient(context.Background(), client), "oauth.example")
+	if err != nil {
+		t.Fatalf("start device code init: %v", err)
+	}
+	if result.ClientID != "client-1" || result.DeviceCode != "device-1" {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := strings.Join(paths, ","); got != "/.well-known/oauth-authorization-server,/register,/device" {
+		t.Fatalf("OAuth request paths = %q", got)
+	}
+}
+
+func TestTokenManagerRefresh_UsesInjectedHTTPClient(t *testing.T) {
+	var paths []string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		body := `{"issuer":"https://oauth.example","authorization_endpoint":"https://oauth.example/authorize","token_endpoint":"https://oauth.example/token","registration_endpoint":"https://oauth.example/register"}`
+		if req.URL.Path == "/token" {
+			body = `{"access_token":"fresh-token","refresh_token":"fresh-refresh","expires_in":3600}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}
+
+	tm := NewTokenManager(NewFileStore(t.TempDir(), "test"), "oauth.example").WithHTTPClient(client)
+	refreshed, err := tm.RefreshToken(&TokenData{AccessToken: "old", RefreshToken: "refresh", ClientID: "client-1"})
+	if err != nil {
+		t.Fatalf("refresh token: %v", err)
+	}
+	if refreshed.AccessToken != "fresh-token" {
+		t.Fatalf("access token = %q", refreshed.AccessToken)
+	}
+	if got := strings.Join(paths, ","); got != "/.well-known/oauth-authorization-server,/token" {
+		t.Fatalf("refresh request paths = %q", got)
+	}
+}
 
 type failingSaveStore struct{ err error }
 
