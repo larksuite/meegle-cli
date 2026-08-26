@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.22] - 2026-08-27
+
+### Fixed
+
+- Restored the Facade command-string Go SDK to its MCP-only contract: local CLI API commands such as `ai-handoff` and `preference handoff` remain available in the npm-distributed `meegle` CLI but are no longer registered or routed by the remote RPC SDK.
+
 ## [v1.0.21] - 2026-08-26
 
 ### Added

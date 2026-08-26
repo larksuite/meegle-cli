@@ -57,8 +57,10 @@ func TestSDKInjectStep_SetsOutputConfig(t *testing.T) {
 	if state.OutputConfig["mcp.server_url"] != "https://meegle.com/mcp_server/v1" {
 		t.Errorf("unexpected server_url: %v", state.OutputConfig["mcp.server_url"])
 	}
-	if state.OutputConfig["session.host"] != "meegle.com" || state.OutputConfig["session.token"] != "my-token" {
-		t.Errorf("shared session was not injected: %#v", state.OutputConfig)
+	for _, key := range []string{"session.host", "session.headers", "session.token", "session.injected"} {
+		if _, ok := state.OutputConfig[key]; ok {
+			t.Errorf("SDK injected CLI API session key %q: %#v", key, state.OutputConfig)
+		}
 	}
 }
 

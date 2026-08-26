@@ -14,7 +14,6 @@ import (
 	meegle "github.com/larksuite/meegle-cli/internal/products/meegle"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/mcpclient"
 	"github.com/larksuite/meegle-cli/pkg/framework/executor"
-	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 	"github.com/larksuite/meegle-cli/pkg/runtime/cliapp"
 )
 
@@ -197,10 +196,12 @@ func NewCommandClient(host string, opts ...CommandClientOption) (*CommandClient,
 	mcpOpts := cfg.mcpClientOpts()
 
 	client := mcpclient.New(serverURL, mcpOpts...)
+	// The command-string SDK is the MCP-only entry point used by Facade for
+	// remote RPC execution. Local CLI API commands belong to the npm-distributed
+	// meegle binary and must not be registered here.
 	dynamicSetup := meegle.NewDynamicRegistrySetup(client, nil,
 		meegle.WithGlobalFlags(meegle.MeegleGlobalFlags),
 	)
-	registrySetup := registry.NewCompositeSetup(dynamicSetup, meegle.NewMeegleLocalSetup())
 
 	placeholderExec := executor.Func(func(_ context.Context, _ *executor.Request) (*executor.RawResult, error) {
 		return nil, fmt.Errorf("executor not implemented: please execute commands through pipeline steps")
@@ -208,7 +209,7 @@ func NewCommandClient(host string, opts ...CommandClientOption) (*CommandClient,
 
 	app, err := cliapp.New(
 		cliapp.WithAppName("meegle"),
-		cliapp.WithSetup(registrySetup),
+		cliapp.WithSetup(dynamicSetup),
 		cliapp.WithExecutor(placeholderExec),
 		cliapp.WithPipelineFactory(newSDKPipelineFactory(cfg, dynamicSetup)),
 	)
