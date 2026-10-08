@@ -321,8 +321,9 @@ description: |
 | text / multi-pure-text / link / bool / number | 单个字面值 | `"需求标题"` / `"100"` / `"true"` |
 | user | 单个 userkey | `"<userkey>"` |
 | multi-user | userkey 数组（**stringified**） | `"[\"<userkey1>\",\"<userkey2>\"]"` |
-| select / radio / tree-select | 枚举项 option_id | `"<option_id>"` |
-| multi-select | option_id 对象数组（**stringified**） | `"[{\"option_id\":\"111\"},{\"option_id\":\"222\"}]"` |
+| select | 已有枚举项传 option_id；确认新增后传 `free_add` 对象（**stringified**） | `"<option_id>"` / `"{\"option_id\":\"<new_id>\",\"option_name\":\"<名称>\",\"free_add\":true}"` |
+| radio / tree-select | 枚举项 option_id | `"<option_id>"` |
+| multi-select | option_id 对象数组（**stringified**）；确认新增后，新增项传 `option_name` 和 `free_add:true` | `"[{\"option_id\":\"<existing_id>\"},{\"option_id\":\"<new_id>\",\"option_name\":\"<名称>\",\"free_add\":true}]"` |
 | tree-multi-select | option_id 字符串数组（**stringified**） | `"[\"id1\",\"id2\"]"` |
 | multi-text | 富文本 Markdown 字符串（语法详见 [references/rich-text-editor-markdown-syntax.md](references/rich-text-editor-markdown-syntax.md)） | `"**加粗**内容"` |
 | date | 毫秒时间戳（天精度） | `"1722182400000"` |
@@ -336,6 +337,7 @@ description: |
 | multi_user_compound_field | 多人复合明细表（**仅更新已有人员**；stringified userkey map，整体覆盖） | `"{\"userkey1\":[{\"field_key\":\"sub_key1\",\"field_value\":\"v1\"}],\"userkey2\":[]}"` |
 
 > 更新角色时不用 fields，用 `workitem update` 的 `role_operate` 参数。
+> `select` / `multi-select` 写入前先按 `option_name` 精确匹配已有选项。未命中或选项列表为空时，先展示近似选项，并询问是否将目标值新增为选项并选中；用户已明确要求新增时无需重复确认。确认后使用 `free_add`；`option_id` 必须非空、不同于 `option_name` 且不与已有 ID 冲突。
 
 ### 普通复合明细表（compound_field）
 
