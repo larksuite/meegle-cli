@@ -8,6 +8,13 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.24] - 2026-10-08
+
+### Changed
+
+- Updated the Meegle Agent Skill with confirmed `free_add` option creation for select and multi-select fields, exact-name matching before writes, and unique option ID requirements.
+- Split MQL guidance into focused references and clarified query, pagination, and CLI examples in the Meegle Agent Skill.
+
 ## [v1.0.23] - 2026-09-08
 
 ### Changed
