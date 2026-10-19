@@ -8,6 +8,12 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.27] - 2026-10-19
+
+### Changed
+
+- Clarified that failed-command diagnostics can be associated with authenticated accounts, tenants and existing request logs for troubleshooting. The updated notice is shown once to existing users without changing their local collection setting. Disabling reporting clears pending local diagnostics but does not delete uploaded data or disable normal service request logging.
+
 ## [v1.0.26] - 2026-10-14
 
 ### Added

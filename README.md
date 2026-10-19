@@ -1032,7 +1032,11 @@ Dynamic discovery accepts nullable JSON Schema types such as `"type": ["string",
 
 ## Failed-command diagnostics
 
-Failed-command diagnostics are enabled by default. On first use, Meegle CLI writes a one-time notice to stderr and saves its record, including in CI, Agent and redirected invocations; stdout remains reserved for command results. After the notice is successfully written and saved, Meegle CLI collects sampled diagnostics for final root commands that fail. Successful commands are not collected in schema v1. Collection never includes command argument values, tokens, file paths, request or response bodies, or error messages.
+Failed-command diagnostics are enabled by default. On first use and when the notice is updated, Meegle CLI writes the current notice once to stderr and saves its record, including in CI, Agent and redirected invocations; stdout remains reserved for command results. After the notice is successfully written and saved, Meegle CLI collects sampled diagnostics for final root commands that fail. Successful commands are not collected in schema v1.
+
+Diagnostics include command and option names (without values), failure stages and error codes, client version and system information, timestamps, durations, and request correlation identifiers. Diagnostic events do not contain argument values, credentials, file paths, business content, request or response bodies, or raw error messages.
+
+Where authentication information is available, the server associates diagnostics with account and tenant identifiers. Diagnostics can be correlated with existing service request logs to identify the relevant account and target space for troubleshooting. Diagnostics are therefore not anonymous. Excluding argument values from diagnostic events does not mean that related information is absent from existing service request logs.
 
 The foreground command selects a diagnostic event and hands it to a detached maintenance process. That process queues the event without scanning historical events, then performs cleanup, policy refresh and upload when due. The foreground does not wait for queue/sequence locks, event writes or network delivery. Command return is not confirmation that its event has been queued. Policy is refreshed at most every 12 hours (with a 1-hour retry after an unhealthy refresh). Pending events are isolated by profile and host. Background cleanup removes expired events and the oldest excess events to meet the global limits of 7 days, 1,000 events and 5 MiB. Writes can temporarily exceed these limits until maintenance runs. While the current profile/host has queued events, subsequent commands can trigger global cleanup once a minute, independently of credentials and the one-hour upload retry interval. Recording a new failure during upload cooldown does not retry the network request. Policy refresh also triggers maintenance. Switching to an empty queue does not itself schedule cleanup of inactive profiles. No resident daemon runs after the CLI exits.
 
@@ -1049,6 +1053,8 @@ meegle telemetry disable  # also clears queued events
 meegle telemetry enable
 meegle telemetry status   # defaults to {"enabled": true} or {"enabled": false}
 ```
+
+Running `meegle telemetry disable` stops future diagnostic reporting and clears the pending local queue. It does not delete uploaded diagnostics or disable normal server-side logging of service requests. The local queue's seven-day retention limit does not specify the retention period for server-side diagnostics or service logs.
 
 Explicit `enable` first writes and saves the current notice if it has not been recorded, then enables the local switch. Notice output or persistence failure returns an error without reporting successful enablement. `status` returns only whether collection is currently allowed, considering the local switch, disclosure record, environment override and locally stored policy snapshot for the current profile/host. It does not resolve credentials or refresh policy over the network, and supports `--format json|table|ndjson` (or `-o`). `enabled=true` does not confirm that any diagnostic has been uploaded.
 
