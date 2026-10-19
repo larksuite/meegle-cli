@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	telemetryDisclosureVersion    = 1
+	telemetryDisclosureVersion    = 2
 	telemetryMaintenanceArg       = "__telemetry-maintain"
 	telemetryProfileEnv           = "MEEGLE_TELEMETRY_PROFILE"
 	telemetryRouteEnv             = "MEEGLE_TELEMETRY_ROUTE"
@@ -185,10 +185,9 @@ func EnsureTelemetryDisclosure(writer io.Writer) error {
 	if err != nil || !due {
 		return err
 	}
-	_, err = fmt.Fprintln(writer, `Meegle CLI collects failed-command diagnostics by default to improve reliability.
-No command argument values, tokens, file paths, request/response bodies, or error messages are collected.
-Disable: meegle telemetry disable
-Enable:  meegle telemetry enable`)
+	_, err = fmt.Fprintln(writer, `Meegle CLI reports failed-command diagnostics by default for troubleshooting; diagnostics can be linked to your account, tenant, and existing request logs.
+Disable reporting and clear pending local diagnostics: meegle telemetry disable (does not delete uploaded data).
+Details: https://github.com/larksuite/meegle-cli#failed-command-diagnostics`)
 	if err != nil {
 		return err
 	}

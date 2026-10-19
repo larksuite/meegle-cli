@@ -120,7 +120,7 @@ func TestTelemetryEnableAndStatusCommands(t *testing.T) {
 		}
 	}
 	if action == "status" {
-		if err := settings.MarkDisclosureShown(1); err != nil {
+		if err := settings.MarkDisclosureShown(2); err != nil {
 			t.Fatal(err)
 		}
 		if mode != "status-disabled" {
@@ -169,7 +169,7 @@ func TestTelemetryEnableAndStatusCommands(t *testing.T) {
 			if loadErr != nil || state.Enabled {
 				t.Fatalf("failed notice enabled collection: %+v, %v", state, loadErr)
 			}
-			if due, dueErr := settings.DisclosureDue(1); dueErr != nil || !due {
+			if due, dueErr := settings.DisclosureDue(2); dueErr != nil || !due {
 				t.Fatalf("failed notice was acknowledged: due=%v err=%v", due, dueErr)
 			}
 		}
@@ -182,7 +182,7 @@ func TestTelemetryEnableAndStatusCommands(t *testing.T) {
 		if !strings.Contains(notice.String(), "meegle telemetry disable") {
 			t.Fatalf("enable missing notice: %q", notice.String())
 		}
-		if due, err := settings.DisclosureDue(1); err != nil || due {
+		if due, err := settings.DisclosureDue(2); err != nil || due {
 			t.Fatalf("enable missing disclosure record: due=%v err=%v", due, err)
 		}
 		state, err := settings.Load()

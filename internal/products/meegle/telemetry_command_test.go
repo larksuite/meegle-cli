@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -235,15 +236,34 @@ func TestTelemetryUsesCommandProfileForQueueAndMaintenance(t *testing.T) {
 	}
 }
 
-func TestTelemetryDisclosureIsShownOnce(t *testing.T) {
-	originalDir := configDir
-	configDir = t.TempDir()
-	t.Cleanup(func() { configDir = originalDir })
-	var output bytes.Buffer
-	MaybeShowTelemetryDisclosure(&output)
-	MaybeShowTelemetryDisclosure(&output)
-	if strings.Count(output.String(), "meegle telemetry disable") != 1 {
-		t.Fatalf("disclosure = %q", output.String())
+func TestTelemetryDisclosureUpdateIsShownOnceWithoutChangingLocalSwitch(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
+			setupTestDir(t)
+			t.Setenv(telemetryControlEnv, "")
+			settings := telemetryevent.NewSettingsStore(telemetryConfigRoot())
+			if err := settings.MarkDisclosureShown(1); err != nil {
+				t.Fatal(err)
+			}
+			if err := settings.SetEnabled(enabled); err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			MaybeShowTelemetryDisclosure(&output)
+			MaybeShowTelemetryDisclosure(&output)
+			if strings.Count(output.String(), "meegle telemetry disable") != 1 || strings.Count(output.String(), "\n") != 3 {
+				t.Fatalf("disclosure = %q, want one three-line notice", output.String())
+			}
+			if !strings.Contains(output.String(), "account, tenant, and existing request logs") ||
+				!strings.Contains(output.String(), "does not delete uploaded data") ||
+				!strings.Contains(output.String(), "https://github.com/larksuite/meegle-cli#failed-command-diagnostics") {
+				t.Fatalf("missing disclosure details: %q", output.String())
+			}
+			state, err := settings.Load()
+			if err != nil || state.Enabled != enabled {
+				t.Fatalf("disclosure changed local switch: state=%+v err=%v", state, err)
+			}
+		})
 	}
 }
 
