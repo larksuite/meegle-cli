@@ -303,6 +303,7 @@ func TestEveryCommandFailureClassQueuesFingerprint(t *testing.T) {
 		{name: "auth", err: meerrors.NewClientError("AUTH_EXPIRED", "sensitive credential state")},
 		{name: "transport", err: meerrors.NewClientError("TRANSPORT_TIMEOUT", "sensitive host"), retryable: true},
 		{name: "backend", err: meerrors.NewServerError("SERVER_CALL_FAILED", "sensitive response").WithHTTPStatus(http.StatusBadGateway), retryable: true, httpStatus: http.StatusBadGateway},
+		{name: "MCP backend", err: meerrors.NewServerError("SERVER_CALL_FAILED", "sensitive response").WithHTTPStatus(http.StatusBadGateway).WithRetryable(false), httpStatus: http.StatusBadGateway},
 		{name: "postprocess", err: meerrors.NewClientError("CLIENT_FILE_SIGN_MISMATCH", "sensitive path")},
 		{name: "canceled", err: context.Canceled},
 		{name: "panic", err: errors.New("sensitive panic"), panicked: true},
@@ -325,5 +326,20 @@ func TestEveryCommandFailureClassQueuesFingerprint(t *testing.T) {
 				t.Fatalf("error metadata = retryable:%v http_status:%d", items[0].Event.Retryable, items[0].Event.HTTPStatus)
 			}
 		})
+	}
+}
+
+func TestTelemetryExplicitRetryAdvice(t *testing.T) {
+	for _, status := range []int{0, http.StatusBadRequest, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		for _, retryable := range []bool{false, true} {
+			err := meerrors.NewServerError("SERVER_CALL_FAILED", "backend failure").
+				WithHTTPStatus(status).WithRetryable(retryable)
+			for _, outcome := range []string{telemetryevent.OutcomeTransportError, telemetryevent.OutcomeBackendError} {
+				got, gotStatus := telemetryErrorMetadata(fmt.Errorf("wrapped: %w", err), outcome)
+				if got != retryable || gotStatus != status || got != err.ErrorPayload()["retryable"] {
+					t.Fatalf("status=%d outcome=%s: retryable=%v HTTP=%d, want %v/%d", status, outcome, got, gotStatus, retryable, status)
+				}
+			}
+		}
 	}
 }

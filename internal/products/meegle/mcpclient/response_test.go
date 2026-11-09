@@ -103,6 +103,71 @@ func TestUnwrapResponse_PlainTextFallbackUnchanged(t *testing.T) {
 	}
 }
 
+func TestUnwrapResponsePreservesBackendRetryAdvice(t *testing.T) {
+	for _, test := range []struct {
+		text      string
+		retryable bool
+	}{
+		{text: "error=MCPGatewayRequestMissing,message=argument arguments.view_id is required,retriable=false"},
+		{text: "error=ErrWorkflowNotFound,message=Workflow Not Found,retriable=false"},
+		{text: "error=ErrWorkingHourRecordCannotRecord,message=所属工作项尚未开启工时登记,retriable=false"},
+		{text: "error=RPCRequestTimeout,message=The tool request timed out. Please try again.,retriable=true", retryable: true},
+		{text: "error=RPCError,message=temporary failure,retriable=true", retryable: true},
+		{text: "error=RPCError,message=embedded,retriable=false,details\nmore details,retriable=true", retryable: true},
+		{text: "error=StableError,message=embedded,retriable=true,retriable=false"},
+		{text: "error=RPCError,message=,retriable=true", retryable: true},
+		{text: "error=RPCError,message=failed,retriable=TRUE"},
+		{text: "error=RPCError,message=failed,retriable=true trailing text"},
+		{text: "error=RPCError,message=failed,retriable=true\n"},
+		{text: "error=RPCError,message=failed,retryable=true"},
+		{text: "error=RPCError,message=failed"},
+		{text: "error=RPCError,retriable=true"},
+		{text: "error=,message=failed,retriable=true"},
+		{text: "error=RPCError,other=value,message=failed,retriable=true"},
+		{text: "ordinary error,retriable=true"},
+		{text: "prefix error=RPCError,message=failed,retriable=true"},
+		{text: "plain error"},
+		{text: ""},
+	} {
+		t.Run(test.text, func(t *testing.T) {
+			_, err := unwrapResponse(mustMarshal(t, mcpToolResponse{
+				IsError: true,
+				Content: []mcpContentEntry{{Type: "text", Text: test.text}, {Type: "text", Text: "log_id:trace-123"}},
+			}))
+			me, ok := err.(*meerrors.MeegleError)
+			if !ok || me.ErrorPayload()["retryable"] != test.retryable {
+				t.Fatalf("error = %#v, want retryable=%v", err, test.retryable)
+			}
+			if me.Code != "SERVER_CALL_FAILED" || me.ExitCode != 2 || me.LogID != "trace-123" {
+				t.Fatalf("error contract changed: %#v", me)
+			}
+			wantMessage := test.text
+			if wantMessage == "" {
+				wantMessage = "server returned error"
+			}
+			if me.Message != wantMessage {
+				t.Fatalf("message = %q, want %q", me.Message, wantMessage)
+			}
+		})
+	}
+}
+
+func TestUnwrapResponseRetryAdviceUsesFirstContentOnly(t *testing.T) {
+	const contract = "error=RPCError,message=failed,retriable=true"
+	for _, content := range [][]mcpContentEntry{
+		nil,
+		{{Type: "image"}, {Type: "text", Text: contract}},
+		{{Type: "text", Text: "log_id:trace-123"}, {Type: "text", Text: contract}},
+		{{Type: "text", Text: "plain error"}, {Type: "text", Text: contract}},
+	} {
+		_, err := unwrapResponse(mustMarshal(t, mcpToolResponse{IsError: true, Content: content}))
+		me, ok := err.(*meerrors.MeegleError)
+		if !ok || me.ErrorPayload()["retryable"] != false {
+			t.Fatalf("content = %#v, error = %#v; want false", content, err)
+		}
+	}
+}
+
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

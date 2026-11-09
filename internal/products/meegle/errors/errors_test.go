@@ -103,6 +103,27 @@ func TestErrorPayload_NilReceiver(t *testing.T) {
 	}
 }
 
+func TestErrorPayload_ExplicitRetryAdvice(t *testing.T) {
+	for _, retryable := range []bool{false, true} {
+		err := NewServerError("SERVER_CALL_FAILED", "backend failure").WithRetryable(retryable).
+			WithLogID("trace-123").WithCause(errors.New("private cause"))
+		if got := err.ErrorPayload()["retryable"]; got != retryable {
+			t.Fatalf("retryable = %v, want %v", got, retryable)
+		}
+		if err.ExitCode != 2 || err.Code != "SERVER_CALL_FAILED" || BackendLogID(err) != "trace-123" {
+			t.Fatalf("error contract changed: %#v", err)
+		}
+		data, marshalErr := json.Marshal(err)
+		if marshalErr != nil || strings.Contains(string(data), "private cause") || strings.Contains(string(data), "retryable") {
+			t.Fatalf("legacy JSON changed: %s, %v", data, marshalErr)
+		}
+	}
+	var err *MeegleError
+	if err.IsRetryable() {
+		t.Fatal("nil error must not recommend retrying")
+	}
+}
+
 func TestErrorMetadataIncludesLogID(t *testing.T) {
 	err := NewServerError("BACKEND_5XX", "upstream failed").WithLogID(" trace-123 ")
 	metadata := err.ErrorMetadata()

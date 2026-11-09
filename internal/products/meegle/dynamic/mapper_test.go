@@ -205,3 +205,45 @@ func TestFallbackResources(t *testing.T) {
 		t.Fatal("fallback table missing resource domain")
 	}
 }
+
+func TestMapToolLiteralName(t *testing.T) {
+	for _, tc := range []struct{ name, resource, method string }{
+		{"workitem__export", "workitem", "export"},
+		{"Work_Item__Export_CSV-v2", "Work_Item", "Export_CSV-v2"},
+		{"measure__codem-edit-chart", "measure", "codem-edit-chart"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, metadata := range []*types.ToolMetadata{nil, {Resource: tc.resource, Method: tc.method}} {
+				tool := types.ToolDefinition{Name: tc.name, Description: "Export data", Metadata: metadata,
+					Parameters: []types.ToolParameter{{Name: "query", Type: "string", Required: true}}}
+				got := MapTool(tool)
+				if got.Resource != tc.resource || got.Method != tc.method || got.ToolName != tc.name || got.Description != tool.Description || len(got.Parameters) != 1 || !got.Parameters[0].Required {
+					t.Fatalf("literal mapping lost name or schema: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestMapToolLiteralNameRejections(t *testing.T) {
+	for _, name := range []string{"__export", "workitem__", "a__b__c", "a___b", "a____b", "work item__export", "workitem__export.csv", "workitem__+export", "workitem__-export", " workitem__export", "workitem__export\n", "工作项__export", "1item__export"} {
+		t.Run(name, func(t *testing.T) {
+			tool := types.ToolDefinition{Name: name}
+			_, issue := MapToolName(tool)
+			if got := MapTool(tool); got.ToolName != "" || issue == nil || issue.Code != "invalid_tool_name" {
+				t.Fatalf("invalid name accepted or not diagnosed: %+v, %+v", got, issue)
+			}
+		})
+	}
+	for _, metadata := range []*types.ToolMetadata{{Resource: "elsewhere", Method: "export"}, {Resource: "workitem"}, {Resource: "workitem", Method: "Export"}, {}} {
+		tool := types.ToolDefinition{Name: "workitem__export", Metadata: metadata}
+		_, issue := MapToolName(tool)
+		if got := MapTool(tool); got.ToolName != "" || issue == nil || issue.Code != "conflicting_mapping" {
+			t.Fatalf("conflicting hint accepted: %+v, %+v", got, issue)
+		}
+	}
+	tool := types.ToolDefinition{Name: "workitem__export", Issue: &types.ToolDefinitionIssue{Code: "unsupported_schema_union"}}
+	if got := MapTool(tool); got.ToolName != "" {
+		t.Fatalf("name mapping bypassed schema rejection: %+v", got)
+	}
+}

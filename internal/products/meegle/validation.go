@@ -31,7 +31,7 @@ func validateMeegleCommand(state *pipeline.PipelineContext) error {
 	missing := pipeline.CollectMissingRequiredInputs(state.Parsed)
 	if missing.Len() > 0 {
 		return meerrors.NewClientError("CLIENT_MISSING_REQUIRED", formatMeegleMissingRequiredInputs(missing)).
-			WithSuggestion(fmt.Sprintf("meegle %s --help", state.Parsed.Node.FullPathString()))
+			WithSuggestion(fmt.Sprintf("%s %s --help", suggestionProductName(state), state.Parsed.Node.FullPathString()))
 	}
 	for _, flag := range state.Parsed.Node.InheritedFlags() {
 		if len(flag.Enum) == 0 {
@@ -117,4 +117,14 @@ func normalizeStructuredFlagNames(state *pipeline.PipelineContext) {
 		delete(state.Parsed.Flags, key)
 		delete(state.Parsed.ExplicitFlags, key)
 	}
+}
+
+// suggestionProductName uses invocation metadata without process-global state.
+func suggestionProductName(state *pipeline.PipelineContext) string {
+	if state != nil && state.Input != nil {
+		if name := strings.TrimSpace(state.Input.Source.Product); name != "" {
+			return name
+		}
+	}
+	return "meegle"
 }

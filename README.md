@@ -710,6 +710,49 @@ The path is read with the OS's default encoding; both relative and absolute
 paths are accepted. A missing file fails with `PARAM_INVALID`; a file whose
 contents are not valid JSON fails with `INVALID_PARAMS_JSON`.
 
+### File Input and Selected-Field Exports
+
+`--input-file @request.json` reads one UTF-8 JSON **object** as business parameters (maximum 32 MiB). Syntax errors retain the parser reason and byte offset; UTF-8 BOM is rejected explicitly, so save input as UTF-8 without BOM. It conflicts with `--params`; regular flags override the same top-level fields, and `--set` overrides file values. CLI control options such as authentication, profile, format and file options cannot be supplied through this file. Existing `--params @file` behavior is unchanged. Input files are not expanded recursively. `--dry-run` previews the expanded parameters, so its output can be large.
+
+`--output-file` accepts one object, one array of objects, or repeated objects. Each object requires only `path` and a non-empty string array `fields`. Do not mix repeated options with array values.
+
+```bash
+meegle <command> --input-file @request.json \
+  --output-file '{"path":"./result.json","fields":["data.items","data.description"]}'
+
+# Multiple files: use one array, or repeat the option with one object each time.
+meegle <command> --output-file '[{"path":"./items.json","fields":["data.items"]},{"path":"./description.json","fields":["data.description"]}]'
+meegle <command> \
+  --output-file '{"path":"./items.json","fields":["data.items"]}' \
+  --output-file '{"path":"./description.json","fields":["data.description"]}'
+```
+
+These are shell examples. SDK command strings use their documented double-quote/escape syntax. Paths resolve from the calling process's working directory; SDK file operations access that process's filesystem. Only regular local input files are supported, not URLs, pipes or `-`. Output parent directories must exist. Existing targets, including symlinks, are never overwritten. The filesystem must support same-directory hard links for atomic no-replace publication. After all output configurations are validated and before the business call, each distinct destination directory is probed by creating, writing, closing, linking and removing temporary files. Any probe failure prevents the business call without occupying the requested destination. Later permission or disk changes can still cause export failure. New files default to `0600` (owner read/write on systems supporting POSIX permissions).
+
+Fields address the final business result **before** the CLI envelope, after result transformations and pagination. For a response `{"data":{"items":[{"id":"123"}],"total":120},"code":0}`, exporting `data.items` writes:
+
+```json
+{"data":{"items":[{"id":"123"}]}}
+```
+
+The agent receives JSON with the saved content removed:
+
+```json
+{
+  "data": {"data":{"total":120},"code":0},
+  "meta": {"output_files":[{"path":"/absolute/path/items.json","fields":["data.items"],"format":"json"}]},
+  "error": null
+}
+```
+
+Existing metadata is preserved. Files always contain UTF-8 JSON with original field names, nesting and types, even for a single field or a `.txt` filename. Null and empty values are valid; empty parent objects remain in returned data. Object paths and whole array fields are supported; array traversal, wildcards and literal keys containing dots are not. Missing fields, overlapping selections and duplicate destination paths fail. Identical fields within one file are deduplicated. The file preserves response structure, which need not match another command's input schema.
+
+Exports require JSON output and enable the envelope. They conflict with `--select`, non-JSON formats, `--dry-run` and explicit `--envelope=false`. Batch errors and pagination continuation/truncation information retain their existing meaning. Help/version do not read or write files. Without these options, output is unchanged.
+
+All selections are checked before writing. Each file is published atomically, but multiple files are **not** one transaction. Failures exit nonzero on stderr with `FILE_OUTPUT_FAILED`, `meta.business_execution`, completed `meta.output_files` and `meta.output_failure` (`stage`, `path`). `business_execution: "completed"` means the business execution returned; it does not mean every item in a batch succeeded. The CLI never retries a business operation or prints the large payload as a fallback. Completed files survive later failures, including stdout failure. When stdout returns an error, reporting saved paths through stderr is best effort: a broken pipe can terminate the process via SIGPIPE before it reports them; unpublished temporary files are cleaned up on handled failure/cancellation. Process termination or power loss can leave temporary files; crash durability is not promised.
+
+File I/O reduces agent context usage, not network limits or peak memory guarantees. Ordinary MCP responses retain the 32 MiB wire limit; pagination still accumulates results in memory. Unselected large fields still appear in the response.
+
 ### Priority
 
 When `--set`, `--params`, and regular flags are used together:
@@ -742,13 +785,17 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--select` | | Field projection with dot paths |
 | `--set` | | Set nested parameters (repeatable) |
 | `--params` | `-P` | Full JSON parameter body; prefix with `@` to read from a file (e.g. `--params @body.json`) |
+| `--input-file` | | Read one UTF-8 JSON business-parameter object from `@path`, up to 32 MiB; conflicts with `--params` |
+| `--output-file` | | Export fields using `{ "path": "result.json", "fields": ["data.items"] }`; one object, an array, or repeated objects |
 | `--dry-run` | | Render request without executing |
 | `--envelope` | | Wrap success output as `{data, meta, error}` — `meta.logid` carries the backend trace id when present |
 | `--verbose` | `-v` | Verbose output |
 | `--profile` | | Use a specific configuration profile |
 | `--refresh` | | Refresh cached commands from server (bypass the local 24 h cache) |
-| `--auto-paginate` | | Automatically fetch and merge all pages when the response contains pagination signals (`next_page_token` or `pagination.has_more`); merged list arrays are concatenated, and a 200-page safety cap plus a 3-empty-page streak guard prevent runaway loops |
+| `--auto-paginate` | | Automatically fetch and merge pages using top-level or nested page tokens, or page-number pagination, with a 200-page safety cap |
 | `--version` | | Print the CLI version and exit (alias of `meegle version`) |
+
+For `workitem get`, field pages are concatenated while attributes and current nodes retain a single snapshot. Cursor pagination continues through empty pages while the cursor advances; repeated or cyclic tokens, or `has_more=true` without a continuation token, fail explicitly. At the 200-page cap, the result retains continuation information and `--envelope` metadata includes `truncated=true`. Page-number pagination retains the three-consecutive-empty-page guard.
 
 `--version` is treated as the version alias only when it is a standalone flag. If a preceding string flag is waiting for a value, the literal `--version` remains that flag's value.
 
@@ -824,6 +871,19 @@ AI handoff Config, Preference, and Create Link responses also copy the gateway
 `x-tt-logid` response header to `meta.logid`. Successful calls expose it only
 with `--envelope`; failures include it in their structured error envelope
 automatically. No debug logging is required.
+
+For direct MCP tool-call failures, `error.retryable` preserves the backend's
+`retriable` value from the documented first text-content entry:
+`error=<category>,message=<text>,retriable=<true|false>`. The complete contract
+must match; retry markers inside ordinary messages or unknown structured
+fields do not supply retry advice. Missing or malformed advice defaults to
+`false`. The backend message and LogID remain unchanged.
+
+HTTP failures, JSON-RPC protocol errors, and client timeouts without this tool
+error contract use `retryable=false`; SDK command-discovery behavior is unchanged.
+Retry advice does not guarantee that an operation was not executed or that a
+write is idempotent. Check the operation result after a timeout. This field
+adds no automatic retries; existing authentication refresh behavior is unchanged.
 
 ### Dry Run
 
@@ -1016,6 +1076,8 @@ meegle config profile delete staging
 
 ## Enterprise CLI Extensions
 
+Source-level product assembly can independently select its directory, business client, file client, commands, shortcuts, and built-in result transforms. These interfaces live under `internal/products/meegle` for products built within this module; external Go modules continue to use the public extension packages. Ordinary required-input, attachment, and batch error suggestions, plus tool names rendered as commands in backend errors, use the invoking CLI name, falling back to `meegle` when absent. Explicit batch help describes the bound tool without assuming a Meegle command. Create a fresh App for each execution; sequential reuse can retain flag values. See the [assembly contract](./docs/design/CLI-EXTENSION-ARCHITECTURE.md#显式产品装配).
+
 Companies can depend on this Go module, register trusted in-process adapters, and build their own `meegle` binary without modifying the official repository. V1 supports three extension seams:
 
 - `extension/credential` selects an account and supplies an existing Meegle user token. Known local/recovery commands bootstrap without invoking Credential providers, so a slow OIDC provider cannot block help, version, configuration repair, completion, URL parsing, or extension diagnostics; commands that need identity still resolve the provider and fail closed on any provider error.
@@ -1027,7 +1089,9 @@ Use `cmd.ExecuteWithVersion(version)` for an enterprise binary whose plugins dec
 An extension-enabled binary exposes non-secret diagnostics under `meegle extension doctor|credentials|transport|plugins|policy|discovery`. Credential and transport diagnostics distinguish `not-evaluated`, `active`, and `failed` instead of re-running providers during an offline diagnostic command. Restrict rules also govern these commands, so a readonly allow-list should include `extension/**` when operators need troubleshooting access.
 Policy denials honor explicit structured output modes and use the stable `CLIENT_COMMAND_DENIED` error code. Credential and Platform failures that happen before CLI App construction also honor explicit JSON/NDJSON output and expose `CLIENT_CREDENTIAL_RESOLUTION_FAILED` or `CLIENT_EXTENSION_INSTALL_FAILED` instead of plain text.
 Errors and panic values returned by extension callbacks stay behind a guarded Go error-chain boundary: custom `Is`, `As`, `Unwrap`, `Error`, or payload methods cannot crash the CLI, and panic details cannot enter public output. Extension code should still return ordinary, context-aware errors because it runs as trusted code in the CLI process.
-Every JSON-RPC response is bounded before decoding: `tools/list` uses an 8 MiB discovery limit and all other calls use a 32 MiB per-response limit.
+Every JSON-RPC response is bounded before decoding: `tools/list` uses an 8 MiB per-response limit and all other calls use a 32 MiB per-response limit. Tool discovery follows opaque `nextCursor` cursors, including through empty pages, and preserves tool order and individual schema diagnostics. Paginated discovery allows up to 2048 tools, 256 pages, and 8 MiB of cumulative result JSON; invalid or repeated cursors, request failures, cancellation, and exceeded limits fail discovery without caching a partial directory. Single-page discovery retains its existing behavior and count-limit diagnostics; existing cache fallback rules still apply.
+New tools named `resource__method` appear as `meegle resource method` after refreshing the command directory with `--refresh`. Both segments are preserved exactly: each starts with an ASCII letter and may contain letters, digits, single underscores, or hyphens. Exactly one `__` separator is required. Existing built-in and metadata mappings remain compatible. Conflicting metadata, invalid definitions, reserved paths, and duplicate paths are isolated with diagnostics; case-only resource collisions are also rejected. Only tools in the selected directory are registered, and calls retain the complete original tool name. This naming support does not add an export operation by itself. Existing public CLI cache behavior is unchanged: an empty discovery response retains the last usable cache; command removal is applied when a successful non-empty directory replaces it.
+
 Dynamic discovery accepts nullable JSON Schema types such as `"type": ["string", "null"]` and exposes them as the underlying CLI/SDK parameter type. Unions containing multiple non-null types are isolated with the stable `unsupported_schema_union` diagnostic instead of silently removing unrelated tools.
 
 ## Failed-command diagnostics

@@ -155,6 +155,10 @@ func (r *CommandRouter) execute(input *frameworkadapter.RawInput, executor func(
 	if root == nil {
 		return frameworkerrors.New(frameworkerrors.CategoryConfig, frameworkerrors.CodeConfigInvalid, "router is not built")
 	}
+	// Cobra retains flag values between executions. Restore each invocation's
+	// starting values so a reused CLI/SDK cannot replay a previous file export.
+	restore := snapshotFlags(root)
+	defer restore()
 	ctx := input.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -287,6 +291,7 @@ func (r *CommandRouter) newParsedCommand(cmd *cobra.Command, node *registry.Comm
 		RawArgs:       rawArgs,
 		RawFlags:      raw,
 		Diagnostics:   diagnostics,
+		ControlFlags:  controlFlagNames(r.manager.Registry().Tree().GlobalFlags),
 	}, nil
 }
 

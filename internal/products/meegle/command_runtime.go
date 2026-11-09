@@ -108,6 +108,7 @@ func (step *RuntimeExecutorStep) Execute(ctx context.Context, state *pipeline.Pi
 type MCPRuntime struct {
 	Session      *SessionStep
 	CommandsFunc func() []types.MappedCommand
+	dependencies *ProductConfig
 }
 
 func (runtime *MCPRuntime) Validate(state *pipeline.PipelineContext) error {
@@ -116,6 +117,19 @@ func (runtime *MCPRuntime) Validate(state *pipeline.PipelineContext) error {
 
 func (runtime *MCPRuntime) PrepareSession(ctx context.Context, state *pipeline.PipelineContext) error {
 	if state == nil {
+		return nil
+	}
+	if runtime.dependencies != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if state.OutputConfig == nil {
+			state.OutputConfig = make(map[string]any)
+		}
+		state.OutputConfig["mcp.client"] = runtime.dependencies.BusinessClient
+		state.OutputConfig["mcp.file_client"] = runtime.dependencies.FileClient
+		state.OutputConfig["mcp.headers"] = cloneProductHeaders(runtime.dependencies.Identity.Headers)
+		state.OutputConfig["mcp.access_token_header"] = runtime.dependencies.Identity.AccessTokenHeader
 		return nil
 	}
 	if injected, _ := state.OutputConfig["mcp.injected"].(bool); injected {

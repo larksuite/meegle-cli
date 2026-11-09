@@ -90,6 +90,8 @@ WHERE array_contains(get_node_attribute('开始','负责人'), '<id:userkey>')
 | 状态时间窗口（状态流） | `status_time('状态名') between ...` |
 | 状态累计时长（状态流） | `status_time('__<状态名>_结束时间') - status_time('__<状态名>_开始时间')`（仅 SELECT） |
 | 关系语境「每一个」/「存在一个」/「每一个不满足」/「存在一个不满足」 | `all_relation_match` / `any_relation_match` / `none_relation_match` / `not all_relation_match` |
+| 包含已终止的、全部（含已终止） | 传 `--features '{"FindAborted":"true"}'`，WHERE 不加终止条件（见 [mql-basics.md §11](mql-basics.md)） |
+| 已终止的、被终止的 | MQL 的 WHERE 加 `` `abort_reason` IS NOT NULL ``；调用时另传参数 `--features '{"FindAborted":"true"}'` |
 | 数组语义 | 语法 |
 |------|------|
 | 存在选项属于（OR） | `IN + 元组`（首选）；控件函数用 `any_match` |

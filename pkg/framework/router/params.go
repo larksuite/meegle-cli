@@ -24,13 +24,19 @@ import (
 // explicit is mutated in place; callers should pass the same map they intend
 // to use as ParsedCommand.ExplicitFlags.
 func MergeStructuredParams(flags map[string]any, explicit map[string]any) (map[string]any, error) {
+	return mergeStructuredParams(flags, explicit, nil)
+}
+
+func mergeStructuredParams(flags map[string]any, explicit map[string]any, merged map[string]any) (map[string]any, error) {
 	if flags == nil {
 		flags = make(map[string]any)
 	}
 	if explicit == nil {
 		explicit = make(map[string]any)
 	}
-	merged := make(map[string]any)
+	if merged == nil {
+		merged = make(map[string]any)
+	}
 	if rawParams, ok := flags["params"].(string); ok && strings.TrimSpace(rawParams) != "" {
 		payload, err := resolveParamsPayload(rawParams)
 		if err != nil {
@@ -50,6 +56,9 @@ func MergeStructuredParams(flags map[string]any, explicit map[string]any) (map[s
 		}
 	}
 	for key, value := range merged {
+		if key == "input-file" || key == "output-file" || key == "input_file" || key == "output_file" {
+			return nil, frameworkerrors.New(frameworkerrors.CategoryUser, frameworkerrors.CodeParamInvalid, "file options must be supplied explicitly, not through --params or --set")
+		}
 		if _, exists := explicit[key]; exists {
 			continue
 		}

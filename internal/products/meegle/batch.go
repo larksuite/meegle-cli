@@ -96,34 +96,16 @@ func injectBatchCommands(nodes []*registry.CommandNode) {
 			continue
 		}
 
-		flags, tags := deriveBatchFlagsAndTags(bc, sibling)
-
-		target.Children = append(target.Children, &registry.CommandNode{
-			Name:    bc.Name,
-			Aliases: bc.Aliases,
-			Help: registry.HelpText{
-				Brief: bc.Brief,
-				Long:  buildBatchLongHelp(bc),
-			},
-			Flags:      flags,
-			HandlerRef: sibling.HandlerRef,
-			Meta: registry.NodeMeta{
-				CommandID: "batch:" + bc.Group + "/" + bc.Name,
-				Source:    "batch",
-				Risk:      sibling.Meta.Risk,
-				ToolName:  sibling.HandlerRef,
-				Tags:      tags,
-			},
-		})
+		target.Children = append(target.Children, buildBatchCommand(bc, sibling))
 	}
 }
 
 // buildBatchLongHelp renders the --help Long text for a batch command,
 // interpolating the fan-out caps from their constants so the text can't
 // drift from the behavior.
-func buildBatchLongHelp(bc *batchCommand) string {
+func buildBatchLongHelp(bc *batchCommand, singleItemTarget string) string {
 	lines := []string{
-		fmt.Sprintf("Client-side fan-out over `meegle %s %s`, one call per ID.", bc.Group, bc.SingleCommandName),
+		fmt.Sprintf("Client-side fan-out over %s, one call per ID.", singleItemTarget),
 		fmt.Sprintf("Up to %d IDs per invocation, executed with %d concurrent workers.", maxBatchIDs, batchConcurrency),
 		"",
 		fmt.Sprintf("Provide IDs via --%s (comma-separated or repeated)", bc.IDsFlag),
@@ -158,6 +140,7 @@ func deriveBatchFlagsAndTags(bc *batchCommand, sibling *registry.CommandNode) ([
 	if bc.IDsFileFlag != "" {
 		flags = append(flags, registry.FlagDef{
 			Name:        bc.IDsFileFlag,
+			NoFileInput: true,
 			Type:        registry.FlagTypeString,
 			Description: "Read IDs from file (one per line or comma-separated; lines starting with # are ignored).",
 		})
@@ -356,7 +339,7 @@ func (s *BatchExecutorStep) Execute(ctx context.Context, state *pipeline.Pipelin
 	authMu.Unlock()
 	if terminal != nil {
 		if me, ok := terminal.(*meerrors.MeegleError); ok && s.CommandsFunc != nil {
-			me.Message = sanitizeToolNames(me.Message, s.CommandsFunc())
+			me.Message = sanitizeToolNames(me.Message, s.CommandsFunc(), suggestionProductName(state))
 		}
 		return terminal
 	}
@@ -369,7 +352,7 @@ func (s *BatchExecutorStep) Execute(ctx context.Context, state *pipeline.Pipelin
 	}
 
 	state.Result = &executor.RawResult{
-		Data: assembleBatchResponse(results, perItemParam, s.CommandsFunc),
+		Data: assembleBatchResponse(results, perItemParam, s.CommandsFunc, suggestionProductName(state)),
 	}
 	return nil
 }
@@ -409,7 +392,7 @@ type batchItem struct {
 
 // assembleBatchResponse turns the internal per-id slice into the public
 // JSON-serialisable structure: {results, errors, summary}.
-func assembleBatchResponse(items []batchItem, perItemParam string, cmdFn func() []types.MappedCommand) map[string]any {
+func assembleBatchResponse(items []batchItem, perItemParam string, cmdFn func() []types.MappedCommand, product string) map[string]any {
 	results := make([]map[string]any, 0, len(items))
 	errs := make([]map[string]any, 0)
 	succeeded := 0
@@ -417,7 +400,7 @@ func assembleBatchResponse(items []batchItem, perItemParam string, cmdFn func() 
 		if it.Err != nil {
 			code, message := classifyBatchError(it.Err)
 			if cmdFn != nil {
-				message = sanitizeToolNames(message, cmdFn())
+				message = sanitizeToolNames(message, cmdFn(), product)
 			}
 			errs = append(errs, map[string]any{
 				perItemParam: it.ID,
@@ -639,7 +622,7 @@ func collectBatchIDs(state *pipeline.PipelineContext) ([]json.Number, error) {
 	}
 
 	if len(raw) == 0 {
-		return nil, missingIDsError(bc)
+		return nil, missingIDsError(bc, state)
 	}
 
 	seen := make(map[string]struct{}, len(raw))
@@ -662,7 +645,7 @@ func collectBatchIDs(state *pipeline.PipelineContext) ([]json.Number, error) {
 		ids = append(ids, n)
 	}
 	if len(ids) == 0 {
-		return nil, missingIDsError(bc)
+		return nil, missingIDsError(bc, state)
 	}
 	if len(ids) > maxBatchIDs {
 		return nil, meerrors.NewClientError("CLIENT_INVALID_PARAM",
@@ -706,8 +689,8 @@ func canonicalIntegerKey(number json.Number) string {
 	return coefficient + "e" + exponent.String()
 }
 
-func missingIDsError(bc *batchCommand) *meerrors.MeegleError {
-	hint := fmt.Sprintf("meegle %s %s --%s <id>[,<id>...]", bc.Group, bc.Name, bc.IDsFlag)
+func missingIDsError(bc *batchCommand, state *pipeline.PipelineContext) *meerrors.MeegleError {
+	hint := fmt.Sprintf("%s %s %s --%s <id>[,<id>...]", suggestionProductName(state), bc.Group, bc.Name, bc.IDsFlag)
 	var msg string
 	if bc.IDsFileFlag != "" {
 		msg = fmt.Sprintf("missing required parameter: --%s or --%s", bc.IDsFlag, bc.IDsFileFlag)
@@ -787,4 +770,26 @@ func parseIDsFromFile(path string) ([]string, error) {
 			fmt.Sprintf("failed to read --ids-file %q: %s", path, err))
 	}
 	return tokens, nil
+}
+
+func buildBatchCommand(bc *batchCommand, sibling *registry.CommandNode) *registry.CommandNode {
+	flags, tags := deriveBatchFlagsAndTags(bc, sibling)
+
+	return &registry.CommandNode{
+		Name:    bc.Name,
+		Aliases: append([]string(nil), bc.Aliases...),
+		Help: registry.HelpText{
+			Brief: bc.Brief,
+			Long:  buildBatchLongHelp(bc, fmt.Sprintf("`meegle %s %s`", bc.Group, bc.SingleCommandName)),
+		},
+		Flags:      flags,
+		HandlerRef: sibling.HandlerRef,
+		Meta: registry.NodeMeta{
+			CommandID: "batch:" + bc.Group + "/" + bc.Name,
+			Source:    "batch",
+			Risk:      sibling.Meta.Risk,
+			ToolName:  sibling.HandlerRef,
+			Tags:      tags,
+		},
+	}
 }

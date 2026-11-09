@@ -999,3 +999,138 @@ func TestHasRefreshFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestDynamicRegistrySetup_LiteralNamesAndConflicts(t *testing.T) {
+	tools := []types.ToolDefinition{
+		{Name: "Work_Item__Export_CSV-v2"},
+		{Name: "workitem__export"},
+		{Name: "workitem__Export"},
+		{Name: "Workitem__other"},
+		{Name: "auth__status"},
+		{Name: "Auth__other"},
+		{Name: "workitem__get"},
+		{Name: "Workitem__Get"},
+		{Name: "workitem__bad", Issue: &types.ToolDefinitionIssue{Code: "unsupported_schema_union"}},
+		{Name: "workitem__conflict", Metadata: &types.ToolMetadata{Resource: "other", Method: "path"}},
+		{Name: "workitem__bad-flag", Parameters: []types.ToolParameter{{Name: "profile", Type: "string"}}},
+		{Name: "a__b__c"},
+		{Name: "unknown_legacy"},
+	}
+	setup := NewDynamicRegistrySetup(&successLister{tools: tools}, nil, WithGlobalFlags(MeegleGlobalFlags))
+	tree, err := setup.Setup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.New(tree); err != nil {
+		t.Fatalf("bad entry poisoned registry: %v", err)
+	}
+	commands := setup.MappedCommands()
+	if len(commands) != 2 || commands[0].ToolName != "Work_Item__Export_CSV-v2" || commands[1].ToolName != "workitem__export" {
+		t.Fatalf("unexpected accepted commands: %+v", commands)
+	}
+	want := map[string]string{
+		"workitem__Export": "duplicate_path", "Workitem__other": "conflicting_resource_case",
+		"auth__status": "reserved_path", "Auth__other": "reserved_path",
+		"workitem__get": "reserved_path", "Workitem__Get": "reserved_path",
+		"workitem__bad": "unsupported_schema_union", "workitem__conflict": "conflicting_mapping",
+		"workitem__bad-flag": "invalid_command", "a__b__c": "invalid_tool_name", "unknown_legacy": "missing_mapping",
+	}
+	issues := setup.MappingIssues()
+	if len(issues) != len(want) {
+		t.Fatalf("issues = %+v", issues)
+	}
+	for _, issue := range issues {
+		if want[issue.ToolName] != issue.Code {
+			t.Errorf("unexpected diagnostic: %+v", issue)
+		}
+		delete(want, issue.ToolName)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing diagnostics: %v", want)
+	}
+}
+
+func TestDynamicRegistrySetup_LiteralDirectoryRefresh(t *testing.T) {
+	cache := NewToolCache(t.TempDir(), "default", DefaultTTL)
+	lister := &successLister{tools: []types.ToolDefinition{{Name: "workitem__export"}}}
+	setup := NewDynamicRegistrySetup(lister, cache, WithForceRefresh(true))
+	for _, tools := range [][]types.ToolDefinition{
+		{{Name: "workitem__export"}},
+		{{Name: "Report__Read_CSV"}},
+		{{Name: "search_by_mql"}},
+	} {
+		lister.tools = tools
+		tree, err := setup.Setup(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := registry.New(tree); err != nil {
+			t.Fatal(err)
+		}
+		commands := setup.MappedCommands()
+		if len(commands) != len(tools) || len(setup.MappingIssues()) != 0 {
+			t.Fatalf("stale commands or diagnostics: %+v / %+v", commands, setup.MappingIssues())
+		}
+		for i, tool := range tools {
+			if commands[i].ToolName != tool.Name {
+				t.Fatalf("command = %+v, want %s", commands[i], tool.Name)
+			}
+		}
+		cached, err := cache.Get()
+		if err != nil || cached == nil || len(cached.Tools) != len(tools) {
+			t.Fatalf("cache not replaced: %+v, %v", cached, err)
+		}
+	}
+	if lister.calls != 3 {
+		t.Fatalf("refresh calls = %d", lister.calls)
+	}
+}
+
+func TestDynamicRegistrySetup_LiteralCannotDisplaceLegacyResource(t *testing.T) {
+	for _, legacy := range []types.ToolDefinition{
+		{Name: "search_by_mql"},
+		{Name: "legacy_metadata", Metadata: &types.ToolMetadata{Resource: "workitem", Method: "export"}},
+	} {
+		for _, newName := range []string{"Workitem__export", "workitem__export"} {
+			for _, literalFirst := range []bool{true, false} {
+				literal := types.ToolDefinition{Name: newName}
+				tools := []types.ToolDefinition{legacy, literal}
+				if literalFirst {
+					tools[0], tools[1] = tools[1], tools[0]
+				}
+				setup := NewDynamicRegistrySetup(&successLister{tools: tools}, nil)
+				tree, err := setup.Setup(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				reg, err := registry.New(tree)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := "workitem.query"
+				if legacy.Metadata != nil {
+					path = "workitem.export"
+				}
+				if node := reg.GetByPath(path); node == nil || node.HandlerRef != legacy.Name {
+					t.Fatalf("legacy displaced: %s, literal=%s first=%v", legacy.Name, newName, literalFirst)
+				}
+			}
+		}
+	}
+}
+
+func TestDynamicRegistrySetup_LiteralEmptyDirectoryKeepsPublicCache(t *testing.T) {
+	cache := NewToolCache(t.TempDir(), "default", DefaultTTL)
+	lister := &successLister{tools: []types.ToolDefinition{{Name: "workitem__export"}}}
+	setup := NewDynamicRegistrySetup(lister, cache, WithForceRefresh(true))
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lister.tools = []types.ToolDefinition{}
+	if _, err := setup.Setup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if commands := setup.MappedCommands(); len(commands) != 1 || commands[0].ToolName != "workitem__export" {
+		t.Fatalf("public empty-directory compatibility changed: %+v", commands)
+	}
+}

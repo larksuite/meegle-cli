@@ -11,6 +11,7 @@ import (
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/attachment"
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
+	"github.com/larksuite/meegle-cli/pkg/framework/adapter"
 	"github.com/larksuite/meegle-cli/pkg/framework/pipeline"
 )
 
@@ -46,7 +47,7 @@ func TestMapDownloadError(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := mapDownloadError(c.in)
+			got := mapDownloadError(c.in, nil)
 
 			if c.wantCode == "" {
 				if got != c.in {
@@ -110,5 +111,22 @@ func TestDownloadGETHeaders_NilWhenEmpty(t *testing.T) {
 	}}
 	if got := downloadGETHeaders(state); got != nil {
 		t.Errorf("want nil when only auth headers present, got %v", got)
+	}
+}
+
+func TestProductSuggestionsDownloadIntegrity(t *testing.T) {
+	for _, failure := range []error{attachment.ErrFileSignMismatch, attachment.ErrFileSignMissing} {
+		baseline := mapDownloadError(failure, nil).(*meerrors.MeegleError)
+		for _, name := range []string{"meegle", "sample-cli", ""} {
+			state := &pipeline.PipelineContext{Input: &adapter.RawInput{Source: adapter.InputSourceMeta{Product: name}}}
+			got := mapDownloadError(failure, state).(*meerrors.MeegleError)
+			wantName := name
+			if wantName == "" {
+				wantName = "meegle"
+			}
+			if got.Suggestion != strings.ReplaceAll(baseline.Suggestion, "meegle", wantName) || got.Code != baseline.Code || got.Message != baseline.Message || got.ExitCode != baseline.ExitCode {
+				t.Fatalf("name=%q baseline=%#v got=%#v", name, baseline, got)
+			}
+		}
 	}
 }

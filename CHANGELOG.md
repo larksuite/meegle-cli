@@ -8,6 +8,29 @@ versioned section on each npm release.
 
 ## [Unreleased]
 
+## [v1.0.28] - 2026-11-09
+
+### Added
+
+- Explicit local JSON file parameters with `--input-file @path` (32 MiB limit), and object-array `--output-file` exports that preserve selected field structure, atomically publish without overwriting, and return remaining data plus absolute paths. Output directories are probed for write and hard-link support before business execution; input syntax diagnostics include parser reasons and byte offsets, with explicit BOM rejection. Partial export failures report completed files without retrying business operations.
+
+- Source-level product assembly with independent directory, business and file clients, explicit command/shortcut bindings, multi-level product-local Go handlers, and existing or raw result selection.
+
+- Dynamically map newly discovered `resource__method` tools to literal CLI command paths, preserving case, underscores, and hyphens. Existing tool mappings remain compatible; invalid names, conflicting metadata, and reserved or duplicate paths are isolated with diagnostics.
+
+### Changed
+
+- Updated the Meegle Agent Skill with capability-checked file input/output guidance and queries that include or select aborted work items.
+
+### Fixed
+
+- MCP tool discovery follows `tools/list` cursor pagination so tools beyond the first page remain available. Empty continuation pages are supported; invalid or repeated cursors, failed requests, cancellation, and cumulative tool/byte/page limits fail discovery without caching a partial directory. Single-page schema and count-limit diagnostics remain unchanged.
+
+- Required-input, attachment and batch error suggestions, and command names substituted into backend errors, use the invoking CLI name, with `meegle` as the fallback. Explicit batch shortcut help describes the bound tool without assuming a Meegle command path.
+
+- Direct MCP tool-call failures preserve the backend's `retriable` advice from its documented error contract instead of deriving `retryable` from the exit category. Missing or malformed advice, HTTP failures, JSON-RPC protocol errors, and client timeouts default to `false`; diagnostics use the same explicit value. Client timeout hints direct users to check the operation result, and SDK command discovery retains its existing behavior.
+- Fixed `workitem get --auto-paginate` returning only the first page when the backend uses nested pagination tokens. Field pages are merged without duplicating attribute or current-node snapshots, advancing cursors continue through empty pages, invalid cursors fail explicitly, and the 200-page cap preserves continuation information.
+
 ## [v1.0.27] - 2026-10-19
 
 ### Changed

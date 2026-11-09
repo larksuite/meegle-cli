@@ -64,6 +64,15 @@ meegle workitem query --project-key 空间key --session-id 首查返回的sessio
 meegle workitem query --project-key 空间key --session-id 首查返回的session_id --group-pagination-list '[{"group_id":"分组ID","page_num":3}]' --format json
 ```
 
+只查已终止的工作项（`--features` 语义见 [mql-basics.md §11](mql-basics.md)）：
+
+```bash
+meegle workitem query --project-key 空间key --mql "$(cat <<'MQL'
+SELECT `work_item_id`, `name` FROM `空间key`.`story` WHERE `abort_reason` IS NOT NULL
+MQL
+)" --features '{"FindAborted":"true"}' --format json
+```
+
 ### workitem get
 
 基础查询：

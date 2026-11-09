@@ -5,6 +5,7 @@ package router
 
 import (
 	"github.com/larksuite/meegle-cli/pkg/framework/errors"
+	"github.com/larksuite/meegle-cli/pkg/framework/fileio"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 )
 
@@ -18,6 +19,9 @@ type ParsedCommand struct {
 	RawArgs       []string
 	RawFlags      map[string]string
 	Diagnostics   []RouteDiagnostic
+	// ControlFlags are product-global options that cannot come from input files.
+	ControlFlags []string
+	FileOutputs  []fileio.Output
 }
 
 type RouteDiagnostic struct {

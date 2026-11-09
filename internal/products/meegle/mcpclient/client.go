@@ -154,6 +154,12 @@ func (c *Client) doCall(ctx context.Context, method string, params any) (json.Ra
 			return nil, fmt.Errorf("http request: %w", redirectErr)
 		}
 		if os.IsTimeout(err) || strings.Contains(err.Error(), "context deadline exceeded") {
+			if method == "tools/call" {
+				return nil, meerrors.NewServerError("SERVER_TIMEOUT",
+					"request timed out; the operation may have completed").
+					WithRetryable(false).
+					WithSuggestion("check the operation result before deciding whether to retry")
+			}
 			return nil, meerrors.NewServerError("SERVER_TIMEOUT",
 				"request timed out, please check your network connection and retry").
 				WithSuggestion("check your network or try again later")
@@ -163,9 +169,13 @@ func (c *Client) doCall(ctx context.Context, method string, params any) (json.Ra
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, meerrors.NewServerError("SERVER_HTTP_ERROR",
+		serverErr := meerrors.NewServerError("SERVER_HTTP_ERROR",
 			fmt.Sprintf("server returned error (%d)", resp.StatusCode)).
 			WithHTTPStatus(resp.StatusCode)
+		if method == "tools/call" {
+			serverErr = serverErr.WithRetryable(false)
+		}
+		return nil, serverErr
 	}
 
 	maxResponseBytes := int64(maxRPCResponseBytes)
@@ -177,7 +187,11 @@ func (c *Client) doCall(ctx context.Context, method string, params any) (json.Ra
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	if rpcResp.Error != nil {
-		return nil, meerrors.NewServerError("SERVER_CALL_FAILED", rpcResp.Error.Message)
+		serverErr := meerrors.NewServerError("SERVER_CALL_FAILED", rpcResp.Error.Message)
+		if method == "tools/call" {
+			serverErr = serverErr.WithRetryable(false)
+		}
+		return nil, serverErr
 	}
 	return rpcResp.Result, nil
 }
@@ -286,9 +300,20 @@ func effectivePort(value *url.URL) string {
 }
 
 func (c *Client) ListTools(ctx context.Context) ([]types.ToolDefinition, error) {
-	raw, err := c.Call(ctx, "tools/list", nil)
+	raw, err := c.ListToolDirectory(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	return DecodeToolDirectory(raw)
+}
+
+// DecodeToolDirectory decodes a tools result object without sending a request.
+// It preserves ListTools schema diagnostics and limits, including the total
+// input size. Callers own envelope extraction and metadata policy.
+func DecodeToolDirectory(raw []byte) ([]types.ToolDefinition, error) {
+	if len(raw) > maxToolsListResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d-byte limit", maxToolsListResponseBytes)
 	}
 
 	var result struct {
