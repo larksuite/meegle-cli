@@ -692,6 +692,49 @@ meegle workitem create --project-key PROJ --work-item-type story --params '@body
 
 读取走系统默认编码，相对路径与绝对路径都接受。文件不存在会返回 `PARAM_INVALID`；文件内容不是合法 JSON 会返回 `INVALID_PARAMS_JSON`。
 
+### 文件输入与指定字段落盘
+
+`--input-file @request.json` 将一个 UTF-8 JSON **对象**作为业务参数读取，上限 32 MiB。语法错误保留解析原因和字节位置；UTF-8 BOM 会明确拒绝，请保存为无 BOM 的 UTF-8。它与 `--params` 互斥；普通参数覆盖同名顶层字段，`--set` 覆盖文件中的值。文件中不能设置认证、profile、输出格式、文件选项等 CLI 控制参数。现有 `--params @file` 行为保持不变，不递归展开文件内容。`--dry-run` 会预览展开后的参数，其输出可能很大。
+
+`--output-file` 支持单个对象、完整对象数组或重复传入对象。每个对象只接受必填的 `path` 和非空字符串数组 `fields`。不能混用重复选项和数组值。
+
+```bash
+meegle <命令> --input-file @request.json \
+  --output-file '{"path":"./result.json","fields":["data.items","data.description"]}'
+
+# 多个文件：传入一个数组，或重复选项、每次传一个对象。
+meegle <命令> --output-file '[{"path":"./items.json","fields":["data.items"]},{"path":"./description.json","fields":["data.description"]}]'
+meegle <命令> \
+  --output-file '{"path":"./items.json","fields":["data.items"]}' \
+  --output-file '{"path":"./description.json","fields":["data.description"]}'
+```
+
+以上为 Shell 示例；SDK 命令字符串应使用其文档规定的双引号及转义语法。相对路径以调用进程的当前目录为基准，SDK 访问的是自身进程的文件系统。输入只支持本地普通文件，不支持 URL、管道和 `-`。输出父目录必须存在，不覆盖已有目标（包括符号链接）。文件系统须支持同目录硬链接以实现不覆盖目标的原子发布。全部输出配置校验后、业务调用前，会对每个不同的目标目录创建临时探针，试写、关闭、硬链接并清理；任何一步失败都拒绝业务调用，且不占用正式目标。预检不能保证之后权限或磁盘状态不变。新文件权限默认为 `0600`（仅当前用户可读写，适用于支持 POSIX 权限的系统）。
+
+字段路径从 CLI 包装前的最终业务结果开始计算，位于结果转换和分页合并之后。例如响应为 `{"data":{"items":[{"id":"123"}],"total":120},"code":0}`，保存 `data.items` 后文件为：
+
+```json
+{"data":{"items":[{"id":"123"}]}}
+```
+
+Agent 收到已移除文件正文的 JSON：
+
+```json
+{
+  "data": {"data":{"total":120},"code":0},
+  "meta": {"output_files":[{"path":"/absolute/path/items.json","fields":["data.items"],"format":"json"}]},
+  "error": null
+}
+```
+
+原有元数据继续保留。文件始终为 UTF-8 JSON，保留字段名、层级和类型；单字段或 `.txt` 后缀也不会改变格式。`null` 和空值正常保存，返回数据中变空的父对象仍保留。支持对象路径及整个数组字段，不支持数组遍历、通配符和包含点的字面字段名。字段缺失、选择重叠、目标路径重复时报错；同一个文件内相同字段去重。文件保留响应结构，不保证符合其他命令的入参结构。
+
+文件输出固定使用 JSON 并开启统一包装，与 `--select`、非 JSON 格式、`--dry-run` 以及显式 `--envelope=false` 互斥。批量错误、分页续页及截断信息保留现有语义。帮助和版本命令不读写文件；不使用新选项时，输出行为不变。
+
+写入前校验全部字段。每个文件独立原子发布，多个文件**不构成整体事务**。失败时非零退出，通过 stderr 返回 `FILE_OUTPUT_FAILED`、`meta.business_execution`、已完成的 `meta.output_files` 和 `meta.output_failure`（`stage`、`path`）。`business_execution: "completed"` 表示业务执行已返回，不代表批量任务中的每一项都成功。CLI 不自动重试业务操作，也不回退打印大字段。已完成文件在后续失败（包括 stdout 失败）时保留；stdout 写入返回错误时尽可能通过 stderr 报告路径，但断开的管道可能触发 SIGPIPE 直接终止进程，无法保证报告；正常捕获的失败或取消会清理未发布的临时文件。进程被强制终止或断电可能遗留临时文件，不承诺崩溃持久性。
+
+文件输入输出减少 Agent 上下文占用，不绕过网络限制，也不保证恒定内存。普通 MCP 响应仍受 32 MiB 完整响应限制；分页继续在内存中合并。未选择的大字段仍会返回。
+
 ### 优先级
 
 当 `--set`、`--params` 和普通 flag 同时使用时：
@@ -724,13 +767,17 @@ meegle workflow get-node --work-item-id 12345 --need-sub-task
 | `--select` | | 字段投影（支持 dot path） |
 | `--set` | | 设置嵌套参数（可重复） |
 | `--params` | `-P` | 完整 JSON 参数体；以 `@` 开头改为从文件读取（如 `--params @body.json`） |
+| `--input-file` | | 从 `@path` 读取一份 UTF-8 JSON 业务参数对象，上限 32 MiB，与 `--params` 互斥 |
+| `--output-file` | | 按 `{ "path": "result.json", "fields": ["data.items"] }` 保存字段；支持单对象、数组或重复对象 |
 | `--dry-run` | | 只渲染请求，不实际执行 |
 | `--envelope` | | 将成功输出包装为 `{data, meta, error}` —— 后端返回 logid 时挂在 `meta.logid` |
 | `--verbose` | `-v` | 详细输出 |
 | `--profile` | | 指定配置 profile |
 | `--refresh` | | 从服务端刷新本地命令缓存（旁路 24 小时缓存） |
-| `--auto-paginate` | | 当响应包含分页信号（`next_page_token` 或 `pagination.has_more`）时自动拉取并合并所有页；列表数组会拼接，200 页安全上限与连续 3 空页保护防止失控循环 |
+| `--auto-paginate` | | 支持顶层游标、嵌套游标和页码分页，自动拉取并合并结果，最多读取 200 页 |
 | `--version` | | 输出 CLI 版本号并退出（`meegle version` 的别名） |
+
+`workitem get` 会拼接各页字段，属性和当前节点保留一份快照。游标分页在游标持续推进时会继续读取空页；游标重复、循环，或 `has_more=true` 却缺少续页游标时明确失败。达到 200 页上限时，结果保留续页信息，`--envelope` 元数据包含 `truncated=true`。页码分页仍保留连续 3 个空页停止的保护。
 
 只有作为独立 Flag 时，`--version` 才表示版本别名；如果前面的字符串 Flag 正在等待参数值，字面量 `--version` 会保留为该 Flag 的值。
 
@@ -795,6 +842,16 @@ meegle workflow update-node --work-item-id 12345 \
 AI Handoff 的 Config、Preference、Create Link 响应也会把网关响应头 `x-tt-logid`
 写入 `meta.logid`：成功时仅在指定 `--envelope` 后展示，失败时自动进入结构化错误
 envelope，无需开启 debug 日志。
+
+直接调用 MCP 工具失败时，`error.retryable` 按后端约定的首段文本
+`error=<分类>,message=<文案>,retriable=<true|false>` 保留后端 `retriable`
+的值。仅解析完整契约，普通消息中的重试字样及未知结构化字段不作为重试建议。
+标记缺失或格式非法时默认 `false`；后端消息和 LogID 保持不变。
+
+没有该工具错误契约的 HTTP 失败、JSON-RPC 协议错误和客户端超时仍返回
+`retryable=false`；SDK 命令发现行为保持不变。重试建议不保证业务尚未执行，
+也不代表写操作幂等。超时后请先检查操作结果。该字段不增加自动重试，
+已有认证刷新行为保持不变。
 
 ### Dry Run
 
@@ -983,6 +1040,8 @@ meegle config profile delete staging
 
 ## 企业 CLI 扩展
 
+源码内的产品装配可以独立选择目录、业务客户端、文件客户端、普通命令、shortcut 和已有结果转换。这些接口位于 `internal/products/meegle`，供同一 Go Module 内的产品使用；外部 Go Module 继续使用公开扩展包。普通必填参数、附件和批量错误建议，以及后端错误中替换工具名的命令文本，使用当前 CLI 名称，缺失时回退 `meegle`。显式批量帮助描述绑定工具，不假设 Meegle 命令路径。每次执行创建新的 App，顺序复用可能残留 flag 值。详见[装配契约](./docs/design/CLI-EXTENSION-ARCHITECTURE.md#显式产品装配)。
+
 企业可以直接依赖本 Go Module，注册可信的进程内适配器并构建自己的 `meegle` 二进制，无需修改官方仓库。V1 提供三个扩展点：
 
 - `extension/credential` 选择账号，并提供现有的 Meegle 用户 Token。已知的本地/自救命令在启动时不会调用 Credential Provider，因此慢 OIDC Provider 不会阻塞帮助、版本、配置修复、补全、URL 解析或扩展诊断；需要身份的命令仍会解析 Provider，任何 Provider 错误都会 fail-closed。
@@ -994,7 +1053,9 @@ meegle config profile delete staging
 扩展版二进制可通过 `meegle extension doctor|credentials|transport|plugins|policy|discovery` 查看脱敏后的诊断信息。Credential 与 Transport 诊断会区分 `not-evaluated`、`active`、`failed`，离线诊断不会为了显示状态而重新调用 Provider。Restrict 同样治理这些命令；需要保留排障入口时，readonly Allow 列表应包含 `extension/**`。
 Policy 拒绝遵循显式结构化输出格式，并使用稳定错误码 `CLIENT_COMMAND_DENIED`。CLI App 构造前发生的 Credential 与 Platform 失败也遵循显式 JSON/NDJSON 输出，分别暴露 `CLIENT_CREDENTIAL_RESOLUTION_FAILED` 或 `CLIENT_EXTENSION_INSTALL_FAILED`，不会退化成纯文本。
 扩展回调返回的 error 和 panic 值会留在受保护的 Go 错误链边界内；自定义 `Is`、`As`、`Unwrap`、`Error` 或错误载荷方法不能让 CLI 崩溃，panic 细节也不会进入公开输出。扩展仍属于进程内可信代码，实现方应返回普通且遵守 Context 的错误。
-所有 JSON-RPC 响应都会在解码前限制大小：`tools/list` 使用 8 MiB 的发现上限，其他调用使用每次响应 32 MiB 的通用上限。
+所有 JSON-RPC 响应都会在解码前限制大小：`tools/list` 每次响应上限为 8 MiB，其他调用每次响应上限为 32 MiB。工具发现会原样传回 `nextCursor` 继续翻页，空页带游标时也会继续，并保留工具顺序和单工具 Schema 诊断。分页发现最多允许 2048 个工具、256 页及累计 8 MiB 的 result JSON；非法或重复游标、请求失败、取消和超限均会使发现失败，不会缓存部分目录。单页发现保留原有行为和数量超限诊断；已有的缓存回退规则继续适用。
+新增工具采用 `resource__method` 名称时，使用 `--refresh` 刷新命令目录后可生成 `meegle resource method`。两段原样保留：均以 ASCII 英文字母开头，可包含字母、数字、单下划线或连字符，且必须恰好有一个 `__` 分隔符。已有内置映射与 metadata 映射保持兼容。冲突 metadata、非法定义、保留路径和重复路径会被单项隔离并提供诊断；仅大小写不同的资源组冲突也会被拒绝。只注册所选目录中的工具，调用保留原始完整工具名称。名称解析能力本身不新增导出操作。公开 CLI 的缓存行为保持不变：服务端返回空目录时保留最近可用缓存；成功返回非空目录时按新目录移除已删除命令。
+
 动态发现支持 `"type": ["string", "null"]` 这类 nullable JSON Schema，并在 CLI/SDK 中按其非 null 类型注册参数。包含多个非 null 类型的 union 会被单项隔离，并输出稳定的 `unsupported_schema_union` 诊断，不影响其他工具。
 
 ## 失败命令诊断

@@ -1,6 +1,6 @@
 # MQL 基础语法与硬规则
 
-目录：1 语句形态 · 2 标识符与字符串 · 3 禁用语法 · 4 不可查询字段类型 · 5 字段名易错映射 · 6 枚举值 · 7 LIKE 转义 · 8 多值右值 · 9 数据类型 · 10 安全传参
+目录：1 语句形态 · 2 标识符与字符串 · 3 禁用语法 · 4 不可查询字段类型 · 5 字段名易错映射 · 6 枚举值 · 7 LIKE 转义 · 8 多值右值 · 9 数据类型 · 10 安全传参 · 11 已终止工作项
 
 ## 1. 语句形态
 
@@ -43,6 +43,7 @@ MQL 支持字段 key 和中文名，必须优先 key，中文名多有同名歧�
 |--------|--------|
 | `state_key` / `status` | `work_item_status` |
 | `archiving_status` / `is_archived` | `archiving_date`（未归档用 `IS NULL`） |
+| `is_aborted` / 用状态 label 判断已终止 | MQL 里写 `` `abort_reason` IS NOT NULL ``；调用时另传参数 `--features`，见 §11 |
 | 中文名如「名称」「当前负责人」「创建时间」 | 先 `workitem meta-fields` 查 key（同时传 `--project-key` 与 `--work-item-type`） |
 
 ## 6. 枚举值 / 状态值禁止硬编码
@@ -90,3 +91,24 @@ SELECT `work_item_id`, `name` FROM `空间key`.`story` WHERE `name` LIKE '%性�
 MQL
 )" --format json
 ```
+
+## 11. 已终止工作项（`FindAborted`）
+
+`workitem query` 默认只返回未终止的工作项，已终止的需要通过 `--features` 的 `FindAborted` 开关放出。判断是否已终止用 `` `abort_reason` ``，不要用 `work_item_status` 的状态 label 猜。
+
+| 用户意图 | 调用参数 `--features` | MQL 的 WHERE |
+|---------|------|-------|
+| 只查未终止的（默认） | 不传 | 不加终止条件 |
+| 未终止和已终止都要（「包含已终止的」「全部，含已终止」） | `{"FindAborted":"true"}` | 不加终止条件 |
+| 只查已终止的 | `{"FindAborted":"true"}` | `` `abort_reason` IS NOT NULL `` |
+
+- `--features` 里只放开关；`abort_reason` 条件写在 `--mql` 里。
+- `--features` 的键值都是字符串：`"true"` / `"false"` 必须小写加引号，`{"FindAborted": true}`（布尔值）不合法。
+- 只写 `` `abort_reason` IS NOT NULL `` 而不传开关，已终止的工作项不在结果里，查不出数据。
+
+```sql
+-- 只查已终止的（同时传 --features '{"FindAborted":"true"}'）
+SELECT `work_item_id`, `name` FROM `project_key`.`story` WHERE `abort_reason` IS NOT NULL
+```
+
+完整调用示例见 [api-examples.md](api-examples.md) 的 `workitem query` 小节。

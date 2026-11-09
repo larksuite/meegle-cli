@@ -95,7 +95,7 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 		observability.SetStage(ctx, "response_wait")
 		observeBackend(ctx, "meegle_mcp", "tools_call", meerrors.BackendLogID(err), err)
 		if me, ok := err.(*meerrors.MeegleError); ok && s.CommandsFunc != nil {
-			me.Message = sanitizeToolNames(me.Message, s.CommandsFunc())
+			me.Message = sanitizeToolNames(me.Message, s.CommandsFunc(), suggestionProductName(state))
 		}
 		attachMyWorkTodoSuggestion(err, state, toolName)
 		return err
@@ -105,7 +105,7 @@ func (s *McpExecutorStep) Execute(ctx context.Context, state *pipeline.PipelineC
 		observeBackend(ctx, "meegle_mcp", "tools_call", extractLogID(resp.LogID), nil)
 		data := resp.Data
 		if state.Parsed != nil {
-			if fn := LookupResultTransform(state.Parsed.FullPath); fn != nil {
+			if fn := commandResultTransform(state.Parsed); fn != nil {
 				data = fn(data)
 			}
 		}
@@ -356,16 +356,8 @@ func sortedValueKeys(values map[string]any) []string {
 
 const maxAutoPaginatePages = 200
 
-// maxEmptyPageStreak is the number of consecutive pages that add zero new
-// items before auto-paginate gives up, even if the backend keeps returning a
-// non-empty page_token. Protects against a stuck cursor burning the budget.
-//
-// Value rationale: 3 strikes a balance — 1 would be too aggressive (a single
-// legitimately empty page from a sparse filter would abort early), while 5+
-// wastes budget on a genuinely stuck cursor. At 3, we tolerate one transient
-// empty page (streak resets on the next non-empty page) but still stop quickly
-// when no progress is being made. The budget saved by stopping early (up to
-// ~197 follow-up calls) far outweighs the cost of 2 extra empty-page fetches.
+// maxEmptyPageStreak limits consecutive empty pages for page-number pagination.
+// Token pagination instead detects repeated cursors and permits empty pages.
 const maxEmptyPageStreak = 3
 
 type AutoPaginateStep struct {
@@ -446,44 +438,39 @@ func isAutoPaginateFlag(parsed *router.ParsedCommand) bool {
 	return v
 }
 
-// paginateByToken handles next_page_token-based pagination.
-// If the payload contains a non-empty next_page_token, it loops: calls the
-// MCP tool with the token, merges the list arrays, and repeats until the
-// token is empty or the 200-page limit is reached.
-//
-// The token parameter name sent to the backend is resolved from the command's
-// mcp_param_types metadata: if the tool declares "next_page_token" (the
-// catalog convention, e.g. get-op-records), that key is used; otherwise it
-// falls back to "page_token". This avoids sending a wrong cursor parameter
-// name that the backend would silently ignore, causing it to return page 1
-// repeatedly and producing 200 pages of duplicate data (the empty-page guard
-// does not trigger because the array length keeps growing).
-//
-// Returns (mergedPayload, paginationMeta, error). If the payload has no
-// next_page_token, returns (originalData, nil, nil) so the caller can try
-// page_num-based pagination instead.
+// paginateByToken follows top-level or nested cursors until completion or the
+// page limit. Cursor progress, rather than item count, permits sparse pages.
+// The request cursor name is resolved from the tool's parameter metadata.
 func paginateByToken(ctx context.Context, client *mcpclient.Client, toolName string, baseParams map[string]any, firstData map[string]any, parsed *router.ParsedCommand, step *AutoPaginateStep, state *pipeline.PipelineContext) (map[string]any, map[string]any, error) {
-	firstToken := getString(firstData, "next_page_token")
-	if firstToken == "" {
+	pg, _ := firstData["pagination"].(map[string]any)
+	_, nestedCursor := pg["next_page_token"]
+	nested := pg != nil && (nestedCursor || (getString(firstData, "next_page_token") == "" &&
+		(hasParamInMetadata(parsed, "page_token") || hasParamInMetadata(parsed, "next_page_token"))))
+	currentToken, err := paginationToken(firstData, nested)
+	if err != nil {
+		return nil, nil, err
+	}
+	if currentToken == "" {
 		return firstData, nil, nil
 	}
 
 	tokenParam := resolveTokenParamName(parsed)
-	transform := LookupResultTransform(parsed.FullPath)
-
+	transform := commandResultTransform(parsed)
 	merged := shallowCopyMap(firstData)
 	pageCount := 1
-	currentToken := firstToken
-	var lastToken string
-	emptyStreak := 0 // consecutive pages that added zero new items
-	stoppedReason := ""
+	seen := map[string]bool{}
+	if token := getString(baseParams, tokenParam); token != "" {
+		seen[token] = true
+	}
 
 	for currentToken != "" {
+		if seen[currentToken] {
+			return nil, nil, meerrors.NewServerError("SERVER_PAGINATION_INVALID", "auto-pagination received a repeated or cyclic page token")
+		}
 		if pageCount >= maxAutoPaginatePages {
-			lastToken = currentToken
 			break
 		}
-		pageCount++
+		seen[currentToken] = true
 
 		params := withParam(baseParams, tokenParam, currentToken)
 		observability.SetStage(ctx, "response_wait")
@@ -498,50 +485,63 @@ func paginateByToken(ctx context.Context, client *mcpclient.Client, toolName str
 			rawData = transform(rawData)
 		}
 		pageData, ok := rawData.(map[string]any)
-		if !ok {
-			break
+		if !ok || pageData == nil {
+			return nil, nil, meerrors.NewServerError("SERVER_PAGINATION_INVALID", "auto-pagination expected an object response")
 		}
-		beforeLen := getListLength(merged)
+		currentToken, err = paginationToken(pageData, nested)
+		if err != nil {
+			return nil, nil, err
+		}
 		merged = mergePayloads(merged, pageData)
-		afterLen := getListLength(merged)
-		currentToken = getString(pageData, "next_page_token")
-
-		// Guard against backends that keep returning a non-empty token while
-		// yielding no new items: stop after a few consecutive empty pages so
-		// we don't burn through the full 200-page budget on a stuck cursor.
-		if afterLen == beforeLen {
-			emptyStreak++
-			if emptyStreak >= maxEmptyPageStreak {
-				stoppedReason = "consecutive_empty_pages"
-				break
-			}
-		} else {
-			emptyStreak = 0
-		}
+		pageCount++
 	}
 
-	delete(merged, "next_page_token")
-
+	if currentToken == "" {
+		delete(merged, "next_page_token")
+		if pg, ok := merged["pagination"].(map[string]any); nested && ok {
+			delete(pg, "next_page_token")
+		}
+	}
 	meta := map[string]any{
 		"auto_paginated": true,
 		"pages_merged":   pageCount,
 		"total_items":    getListLength(merged),
 	}
-	if lastToken != "" {
+	if currentToken != "" {
 		meta["truncated"] = true
-		meta["next_page_token"] = lastToken
+		meta["next_page_token"] = currentToken
 		fmt.Fprintf(os.Stderr,
 			"[meegle] auto-paginate reached %d-page limit; merged %v items across %d pages.\nNext page token: %s. Re-run with --%s %s to continue.\n",
-			maxAutoPaginatePages, meta["total_items"], pageCount, lastToken, strings.ReplaceAll(tokenParam, "_", "-"), lastToken)
+			maxAutoPaginatePages, meta["total_items"], pageCount, currentToken, strings.ReplaceAll(tokenParam, "_", "-"), currentToken)
 	}
-	if stoppedReason != "" {
-		meta["stopped_reason"] = stoppedReason
-		fmt.Fprintf(os.Stderr,
-			"[meegle] auto-paginate stopped early after %d consecutive empty pages; merged %v items across %d pages.\nIf you confirmed there is still data, check the backend pagination logic or re-run with a smaller page size.\n",
-			maxEmptyPageStreak, meta["total_items"], pageCount)
-	}
-
 	return merged, meta, nil
+}
+
+// paginationToken respects has_more when supplied. Nested pagination must
+// explicitly describe completion so a malformed page cannot look complete.
+func paginationToken(data map[string]any, nested bool) (string, error) {
+	control := data
+	if nested {
+		var ok bool
+		control, ok = data["pagination"].(map[string]any)
+		if !ok || control == nil {
+			return "", meerrors.NewServerError("SERVER_PAGINATION_INVALID", "auto-pagination response is missing pagination")
+		}
+	}
+	more, present := control["has_more"]
+	if present || nested {
+		hasMore, ok := more.(bool)
+		if !ok {
+			return "", meerrors.NewServerError("SERVER_PAGINATION_INVALID", "auto-pagination expected a boolean has_more")
+		}
+		if !hasMore {
+			return "", nil
+		}
+		if getString(control, "next_page_token") == "" {
+			return "", meerrors.NewServerError("SERVER_PAGINATION_INVALID", "auto-pagination has_more is true but next_page_token is missing")
+		}
+	}
+	return getString(control, "next_page_token"), nil
 }
 
 // paginateByPageNum handles page_num + pagination.has_more based pagination.
@@ -579,7 +579,7 @@ func paginateByPageNum(ctx context.Context, client *mcpclient.Client, toolName s
 		startPage = n
 	}
 
-	transform := LookupResultTransform(parsed.FullPath)
+	transform := commandResultTransform(parsed)
 
 	merged := shallowCopyMap(firstData)
 	total := toInt64(pagination["total"])
@@ -695,7 +695,8 @@ func paginateByPageNum(ctx context.Context, client *mcpclient.Client, toolName s
 	return merged, meta, nil
 }
 
-// mergePayloads merges two MCP response payloads.
+// mergePayloads merges page arrays, preserving the first work item snapshots.
+// Null work_item_fields are empty pages and do not replace accumulated fields.
 // - Array fields are concatenated (e.g. "list").
 // - Map fields are shallow-merged (e.g. "pagination").
 // - Scalar fields: the newer value wins.
@@ -715,6 +716,14 @@ func mergePayloads(base, next map[string]any) map[string]any {
 		existing, exists := result[k]
 		if !exists {
 			result[k] = v
+			continue
+		}
+		// A null field page is empty; it must not discard accumulated fields.
+		if k == "work_item_fields" && v == nil {
+			continue
+		}
+		// Work item attributes and current nodes are snapshots, not page items.
+		if k == "work_item_attribute" || k == "work_item_current_node" {
 			continue
 		}
 		if existingArr, ok := existing.([]any); ok {
@@ -873,23 +882,25 @@ func isPositiveInteger(v any) bool {
 
 // listFieldPriority is the priority order for detecting the primary list field
 // in a response payload. The first matching key is used; if none match, the
-// first []any value found is used as fallback.
+// lexicographically first []any field is used as fallback.
 var listFieldPriority = []string{"list", "items", "data"}
 
 // getListLength returns the length of the primary list field in m. It prefers
 // well-known field names (list, items, data) in priority order to avoid
 // depending on Go's randomized map iteration order. If none of the priority
-// keys exist, falls back to the first []any value found.
+// keys exist, falls back to the lexicographically first []any field.
 func getListLength(m map[string]any) int {
+	if fields, exists := m["work_item_fields"]; exists {
+		items, _ := fields.([]any)
+		return len(items)
+	}
 	for _, key := range listFieldPriority {
 		if arr, ok := m[key].([]any); ok {
 			return len(arr)
 		}
 	}
-	// Fallback: first []any value found (order non-deterministic but only
-	// affects payloads without any of the priority field names).
-	for _, v := range m {
-		if arr, ok := v.([]any); ok {
+	for _, key := range sortedValueKeys(m) {
+		if arr, ok := m[key].([]any); ok {
 			return len(arr)
 		}
 	}
@@ -955,7 +966,7 @@ func (s *AutoPaginateStep) sanitizeError(err error, state *pipeline.PipelineCont
 		return nil
 	}
 	if me, ok := err.(*meerrors.MeegleError); ok && s.CommandsFunc != nil {
-		me.Message = sanitizeToolNames(me.Message, s.CommandsFunc())
+		me.Message = sanitizeToolNames(me.Message, s.CommandsFunc(), suggestionProductName(state))
 	}
 	attachMyWorkTodoSuggestion(err, state, toolName)
 	return err
@@ -965,6 +976,10 @@ func (s *AutoPaginateStep) sanitizeError(err error, state *pipeline.PipelineCont
 // written by SessionStep. Used by both McpExecutorStep (single-tool call) and
 // BatchExecutorStep (client-side fan-out over one underlying tool).
 func newMcpClientFromState(state *pipeline.PipelineContext) *mcpclient.Client {
+	if client, ok := state.OutputConfig["mcp.client"].(*mcpclient.Client); ok {
+		return client
+	}
+
 	host, _ := state.OutputConfig["mcp.host"].(string)
 	token, _ := state.OutputConfig["mcp.token"].(string)
 	tm, _ := state.OutputConfig["mcp.token_manager"].(*auth.TokenManager)
@@ -1021,7 +1036,7 @@ func newMcpClientFromState(state *pipeline.PipelineContext) *mcpclient.Client {
 // sanitizeToolNames — Replaces MCP tool names in error messages with CLI command names
 // ---------------------------------------------------------------------------
 
-func sanitizeToolNames(msg string, commands []types.MappedCommand) string {
+func sanitizeToolNames(msg string, commands []types.MappedCommand, product string) string {
 	if len(commands) == 0 {
 		return msg
 	}
@@ -1032,7 +1047,7 @@ func sanitizeToolNames(msg string, commands []types.MappedCommand) string {
 	})
 	for _, cmd := range sorted {
 		if strings.Contains(msg, cmd.ToolName) {
-			cliName := fmt.Sprintf("meegle %s %s", cmd.Resource, cmd.Method)
+			cliName := fmt.Sprintf("%s %s %s", product, cmd.Resource, cmd.Method)
 			msg = strings.ReplaceAll(msg, cmd.ToolName, cliName)
 		}
 	}

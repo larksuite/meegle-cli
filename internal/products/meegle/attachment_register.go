@@ -96,8 +96,8 @@ var attachmentShortcuts = []attachmentShortcut{
 		Flags: []registry.FlagDef{
 			{Name: "project-key", Type: registry.FlagTypeString, Required: true, Description: "Lark project key"},
 			{Name: "work-item-id", Type: registry.FlagTypeString, Required: true, Description: "Source work item ID"},
-			{Name: "output", Type: registry.FlagTypeString, Required: true, Description: "Local destination path"},
-			{Name: "overwrite", Type: registry.FlagTypeBool, Description: "Allow overwriting an existing file at --output"},
+			{Name: "output", Type: registry.FlagTypeString, Required: true, NoFileInput: true, Description: "Local destination path"},
+			{Name: "overwrite", Type: registry.FlagTypeBool, NoFileInput: true, Description: "Allow overwriting an existing file at --output"},
 		},
 	},
 }
@@ -132,33 +132,7 @@ func injectAttachmentCommands(nodes []*registry.CommandNode) []*registry.Command
 		if sibling == nil {
 			continue
 		}
-		tags := map[string]string{TagAttachmentShortcut: sc.Kind}
-		// Copy MCP parameter metadata so any future direct-MCP path the
-		// shortcut might need stays byte-identical to the basic command's
-		// wire payload. Mirrors deriveBatchFlagsAndTags in batch.go.
-		for _, key := range []string{"mcp_param_types", "mcp_param_items", "mcp_fixed_params"} {
-			if raw, ok := sibling.Meta.Tags[key]; ok && raw != "" {
-				tags[key] = raw
-			}
-		}
-		group.Children = append(group.Children, &registry.CommandNode{
-			Name:    sc.Name,
-			Aliases: sc.Aliases,
-			Help: registry.HelpText{
-				Brief: sc.Brief,
-				Long:  sc.Long,
-			},
-			Args:       sc.Args,
-			Flags:      sc.Flags,
-			HandlerRef: sibling.HandlerRef, // inherited from the basic prepare-* command
-			Meta: registry.NodeMeta{
-				CommandID: "attachment:" + group.Name + "/" + sc.Name,
-				Source:    "attachment",
-				Risk:      sibling.Meta.Risk,
-				ToolName:  sibling.HandlerRef,
-				Tags:      tags,
-			},
-		})
+		group.Children = append(group.Children, buildAttachmentCommand(group.Name, sc, sibling))
 	}
 
 	return nodes
@@ -254,23 +228,23 @@ func validateUploadShortcutInputs(state *pipeline.PipelineContext) error {
 	if err != nil {
 		return meerrors.NewClientError("CLIENT_INVALID_VALUE",
 			fmt.Sprintf("--resource-type must be an integer (13|14|15|16), got %q", stringFlag(state, "resource-type"))).
-			WithSuggestion("meegle attachment +upload --help")
+			WithSuggestion(suggestionProductName(state) + " attachment +upload --help")
 	}
 	if err := attachment.ValidateResourceType(rt); err != nil {
 		return meerrors.NewClientError("CLIENT_INVALID_VALUE", err.Error()).
-			WithSuggestion("meegle attachment +upload --help")
+			WithSuggestion(suggestionProductName(state) + " attachment +upload --help")
 	}
 	if stringFlag(state, "work-item-id") == "" && stringFlag(state, "work-item-type") == "" {
 		return meerrors.NewClientError("CLIENT_MISSING_REQUIRED",
 			"one of --work-item-id or --work-item-type is required "+
 				"(use --work-item-id to attach to an existing workitem, or --work-item-type "+
 				"when preparing an attachment for a workitem you're about to create)").
-			WithSuggestion("meegle attachment +upload --help")
+			WithSuggestion(suggestionProductName(state) + " attachment +upload --help")
 	}
 	if attachment.RequiresFieldKey(rt) && stringFlag(state, "field-key") == "" {
 		return meerrors.NewClientError("CLIENT_MISSING_REQUIRED",
 			fmt.Sprintf("--field-key is required for --resource-type %d", rt)).
-			WithSuggestion("meegle attachment +upload --help")
+			WithSuggestion(suggestionProductName(state) + " attachment +upload --help")
 	}
 	return nil
 }
@@ -372,7 +346,7 @@ func (s *AttachmentShortcutStep) runDownload(ctx context.Context, state *pipelin
 	}
 	result, err := attachment.ExecuteDownload(ctx, doer, pre, in)
 	if err != nil {
-		return mapDownloadError(err)
+		return mapDownloadError(err, state)
 	}
 
 	state.Result = &executor.RawResult{Data: result}
@@ -384,16 +358,16 @@ func (s *AttachmentShortcutStep) runDownload(ctx context.Context, state *pipelin
 // it guards against — a CDN cache occasionally serving the wrong object —
 // usually clears on retry, so both variants steer the user to re-run the
 // command. Any other error passes through unchanged.
-func mapDownloadError(err error) error {
+func mapDownloadError(err error, state *pipeline.PipelineContext) error {
 	switch {
 	case stderrors.Is(err, attachment.ErrFileSignMismatch):
 		return meerrors.NewClientError("CLIENT_FILE_SIGN_MISMATCH",
 			fmt.Sprintf("downloaded file failed its integrity check (%v); download failed", err)).
-			WithSuggestion("The download returned content for a different signature, likely a stale CDN cache. Please retry `meegle attachment +download`.")
+			WithSuggestion(fmt.Sprintf("The download returned content for a different signature, likely a stale CDN cache. Please retry `%s attachment +download`.", suggestionProductName(state)))
 	case stderrors.Is(err, attachment.ErrFileSignMissing):
 		return meerrors.NewClientError("CLIENT_FILE_SIGN_UNVERIFIED",
 			fmt.Sprintf("cannot verify the downloaded file's integrity (%v); download failed", err)).
-			WithSuggestion("The download response did not include the signature header needed to verify the file. Please retry `meegle attachment +download`.")
+			WithSuggestion(fmt.Sprintf("The download response did not include the signature header needed to verify the file. Please retry `%s attachment +download`.", suggestionProductName(state)))
 	default:
 		return err
 	}
@@ -442,6 +416,9 @@ func (s *AttachmentShortcutStep) resolveDoer(state *pipeline.PipelineContext) at
 		return s.httpFactory()
 	}
 	if state != nil && state.OutputConfig != nil {
+		if client, ok := state.OutputConfig["mcp.file_client"].(*http.Client); ok {
+			return client
+		}
 		if client, _ := state.OutputConfig["mcp.http_client"].(*http.Client); client != nil {
 			return client
 		}
@@ -485,4 +462,34 @@ func boolFlag(state *pipeline.PipelineContext, name string) bool {
 	}
 	b, _ := state.Values[name].(bool)
 	return b
+}
+
+func buildAttachmentCommand(groupName string, sc attachmentShortcut, sibling *registry.CommandNode) *registry.CommandNode {
+	tags := map[string]string{TagAttachmentShortcut: sc.Kind}
+	// Copy MCP parameter metadata so any future direct-MCP path the
+	// shortcut might need stays byte-identical to the basic command's
+	// wire payload. Mirrors deriveBatchFlagsAndTags in batch.go.
+	for _, key := range []string{"mcp_param_types", "mcp_param_items", "mcp_fixed_params"} {
+		if raw, ok := sibling.Meta.Tags[key]; ok && raw != "" {
+			tags[key] = raw
+		}
+	}
+	return &registry.CommandNode{
+		Name:    sc.Name,
+		Aliases: append([]string(nil), sc.Aliases...),
+		Help: registry.HelpText{
+			Brief: sc.Brief,
+			Long:  sc.Long,
+		},
+		Args:       append([]registry.ArgDef(nil), sc.Args...),
+		Flags:      append([]registry.FlagDef(nil), sc.Flags...),
+		HandlerRef: sibling.HandlerRef, // inherited from the basic prepare-* command
+		Meta: registry.NodeMeta{
+			CommandID: "attachment:" + groupName + "/" + sc.Name,
+			Source:    "attachment",
+			Risk:      sibling.Meta.Risk,
+			ToolName:  sibling.HandlerRef,
+			Tags:      tags,
+		},
+	}
 }

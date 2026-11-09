@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -645,4 +646,113 @@ func NewMCPClientFromIdentity(ident ResolvedIdentity, extraOpts ...mcpclient.Opt
 	}
 	opts = append(opts, extraOpts...)
 	return mcpclient.New(baseURL, opts...)
+}
+
+// ProductRegistry supplies an independently selected directory and the command
+// snapshot used for user-facing errors. DynamicRegistrySetup and
+// CommandRegistrySetup both implement it.
+type ProductRegistry interface {
+	registry.RegistrySetup
+	MappedCommands() []types.MappedCommand
+}
+
+// ProductConfig assembles a product without reading local config,
+// installing plugins, or selecting credentials. The caller owns discovery,
+// static commands and clients; clients must remain valid for the app lifetime.
+// BusinessClient owns business authentication. Identity supplies already
+// resolved attachment routing headers, not a fallback identity.
+type ProductConfig struct {
+	Name           string
+	Version        string
+	Registry       ProductRegistry
+	Identity       ResolvedIdentity
+	BusinessClient *mcpclient.Client
+	FileClient     *http.Client
+	CustomizeRoot  cliapp.RootCommandCustomizer
+	// Handlers are selected only by nodes tagged ExecutorKindHandler. The map
+	// is copied at construction; closures own their dependencies and cleanup.
+	Handlers map[string]executor.Handler
+}
+
+// NewProductApp reuses the standard command pipeline with explicit dependencies.
+// Missing dependencies fail at construction; an empty command registry is valid.
+// Construct one App per execution; sequential reuse can retain parsed flags.
+// Callers may reuse clients across apps, but must not mutate them during use.
+func NewProductApp(ctx context.Context, cfg ProductConfig) (app *cliapp.App, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.Name) == "" || nilProductDependency(cfg.Registry) || cfg.BusinessClient == nil || cfg.FileClient == nil {
+		return nil, meerrors.NewClientError("CLIENT_MISCONFIGURED", "product name, registry, business client and file client are required")
+	}
+	// Setup and root customization are synchronous extension boundaries. A
+	// cooperative context bounds them; no goroutine is left behind on return.
+	defer func() {
+		if recover() != nil {
+			app = nil
+			err = meerrors.NewClientError("CLIENT_MISCONFIGURED", "product assembly failed")
+		}
+	}()
+	cfg.Identity.Headers = cloneProductHeaders(cfg.Identity.Headers)
+	handlers := make(map[string]executor.Handler, len(cfg.Handlers))
+	for ref, handler := range cfg.Handlers {
+		if strings.TrimSpace(ref) == "" || handler == nil {
+			return nil, explicitRegistryError("handler references and implementations must be non-empty")
+		}
+		handlers[ref] = handler
+	}
+	cfg.Handlers = handlers
+	tree, err := cfg.Registry.Setup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tree, err = productCommandTree(tree, handlers)
+	if err != nil {
+		return nil, err
+	}
+	app, err = cliapp.New(
+		cliapp.WithInitContext(ctx),
+		cliapp.WithAppName(cfg.Name),
+		cliapp.WithVersion(cfg.Version),
+		cliapp.WithSetup(registry.NewStaticSetup(tree)),
+		cliapp.WithPipelineFactory(productPipelineFactory(cfg, tree.GlobalFlags)),
+		cliapp.WithRootCommandCustomizer(cfg.CustomizeRoot),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProductCommandPaths(app.RootCommand()); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return app, nil
+}
+
+func nilProductDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+func cloneProductHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+	snapshot := make(map[string]string, len(headers))
+	for key, value := range headers {
+		snapshot[key] = value
+	}
+	return snapshot
 }

@@ -118,3 +118,151 @@ CLI 可通过 `meegle extension discovery` 或 `meegle extension doctor` 查看�
 | Transport post-hook 不能通过证书指针修改真实 TLS metadata | 公开 Interceptor + `http.Client.Do`，Race 模式 | 修改 PeerCertificates/VerifiedChains、Request TLS、nil/重复证书对象 | `TestInterceptingRoundTripper_PostMetadataSnapshotDeepClonesCertificates` | PASS |
 
 完整接入代码和所有公开用法见 [`examples/README.md`](../../examples/README.md)。
+
+## 显式产品装配
+
+`NewProductApp` 供本 Go Module 内的产品装配层调用，位于 `internal/products/meegle`；它不是可由外部 Go Module 导入的新插件包。官方 `NewCLIAppContext` 入口继续使用原身份、配置、目录缓存、静态命令及扩展流程。
+
+- `ProductConfig.Registry` 接收独立目录来源。自定义产品优先使用 `NewCommandRegistry` 接收已经完成映射和选择的定义；只有需要 Meegle 既有目录策略时才复用 `NewDynamicRegistrySetup(ToolLister, cache, ...)`。显式注册的空集合表示不注册命令；shortcut 不会自动添加。目录错误直接返回，不会由产品装配入口重新选择目录或身份；DynamicRegistrySetup 保留 Meegle fallback 映射、保留路径校验及 user me、批量、附件 shortcut 自动注入，缓存和降级由既有选项决定；它不是中性的目录映射器。调用方保留该实例，在 App 构造后调用 `MappingIssues()` 获取被隔离工具的诊断；App 不会自动展示这些诊断。
+- `BusinessClient` 复用 `mcpclient.New` 和 `WithHTTPClient`，用于普通请求、批量、分页及附件预处理。必填的 `FileClient` 单独负责附件字节传输。客户端由调用方持有，需在 App 生命周期内保持有效，不应在并发使用时修改。
+- `Identity` 提供已解析的附件路由头；业务鉴权由 BusinessClient 管理，不会重新解析本地配置。头部和命令定义在构造时复制。默认认证头和指定认证头不会转发到下载地址。
+- `CommandDefinition.Result` 和当前用户 shortcut 的 `Result` 可选择默认行为、原始结果或现有当前用户转换；批量与附件继续使用其固定结果结构。`ShortcutBinding` 明确提供场景种类、依赖工具名和参数定义，不要求同时暴露该工具的普通命令。
+- `DecodeToolDirectory` 接收 `{"tools":[...]}` 结果对象，保留 8 MiB 总输入、256 KiB 单工具、2048 个工具及既有参数/schema 校验。非法工具继续作为诊断条目隔离，合法条目保留。调用方自行处理外层协议和 metadata 策略；入口没有忽略校验选项。
+
+中性装配示例（位于本模块内，省略 import）：
+
+```go
+setup, err := meegle.NewCommandRegistry(
+    []meegle.CommandDefinition{{
+        Command: types.MappedCommand{
+            Resource: "record", Method: "get", ToolName: "sample_get",
+            Parameters: []types.ToolParameter{{Name: "work_item_id", Type: "integer", Required: true}},
+        },
+        Result: meegle.RawResult,
+    }},
+    []meegle.ShortcutBinding{{
+        Kind: meegle.ShortcutBatchGet, ToolName: "sample_get",
+        Parameters: []types.ToolParameter{{Name: "work_item_id", Type: "integer", Required: true}},
+    }},
+)
+if err != nil { return err }
+app, err := meegle.NewProductApp(ctx, meegle.ProductConfig{
+    Name: "sample-cli", Version: "1.0.0", Registry: setup,
+    BusinessClient: mcpclient.New(endpoint, mcpclient.WithHTTPClient(businessHTTP)),
+    FileClient: fileHTTP,
+})
+if err != nil { return err }
+return app.Execute(ctx, []string{"record", "get", "--work-item-id", "123"})
+```
+
+`CustomizeRoot` 复用现有根命令定制能力。显式装配不会自动安装官方静态命令或插件；调用方通过这个独立选项决定所需命令。构造期目录与自定义器的 panic 转换为不含原始异常内容的 `CLIENT_MISCONFIGURED`；Context 取消和普通错误返回给调用方。命令快照只在构造时读取，运行期不回调目录；需要更新目录时重新构造 App。
+
+产品装配按一次执行创建一个 App 使用，顺序或并发的下一次执行均重新构造；目录定义和客户端可以按各自契约复用。同一 App 顺序执行时 flag 值可能残留，不能把“不并发”视为跨请求隔离保证。既有 SDK 的 `CommandClient` 也复用 App，该问题独立修复，不属于本装配接口的复用保证。
+
+必填、附件、批量建议及后端工具名替换使用当前 CLI 名称，缺失调用来源时回退 `meegle`；普通调用、后续分页、批量终止和批量逐项错误遵循同一规则。显式批量 shortcut 的帮助描述绑定工具，不假设它存在同名普通命令。调用方提供的认证刷新失败建议仍沿用客户端既有行为，本接口不承诺所有认证提示均已产品化。
+
+## 显式产品装配验收
+
+基线：`07e8c81c9e7a9cd50893554e342e901c81664be6`。以下结果来自同一输入与可控 HTTP 返回下的对照；Mock、导出产物验证和真实联调分别记录。
+
+| 需求 | 可观察行为与测试边界 | 正向与失败场景 | 证据 | 状态 |
+|---|---|---|---|---|
+| 默认行为 | 基线与最终导出 CLI 进程的命令、help、inspect、请求、输出、退出码一致 | 配置/身份优先级、缓存/刷新/空目录/坏目录、错误、普通/批量/分页/user me/附件、无关环境变量不改变默认行为 | `scripts/compare-cli-exports.py`：31 组导出二进制差分；现有 CLI/SDK 集成测试 | PASS |
+| 显式依赖 | 产品 App → 真实 HTTP 服务；业务与文件路由独立 | 成功、缺失依赖、typed nil、请求错误/取消/超时、Body 关闭；失败不回退配置或身份 | `TestProductAssembly*`：真实本地 HTTP、构造期快照/panic、业务取消、文件失败与清理 | PASS |
+| 目录解码 | 严格解码入口与 HTTP ListTools 返回一致 | 合法、坏 schema/metadata、非法 JSON、工具/参数/数量/总字节超限 | `TestDecodeToolDirectory*` 及既有 `TestListTools*` | PASS |
+| 显式注册 | App 命令树和实际调用/结果 | 空集合、普通/shortcut 筛选、工具重绑、原始/已有转换、路径/参数冲突、输入后续修改、交替/并发实例 | `TestCommandRegistry*` / `TestProductAssembly*`；全量 race、三轮乱序 | PASS |
+| 当前产品建议 | CLI stderr、结构化错误、退出码 | 普通/附件/批量建议；默认、sample-cli、空产品、缺失 Source | `TestProductSuggestions*`：CLI JSON 输出及下载错误 | PASS |
+| 后端错误中的命令名 | 产品 CLI → 本地 HTTP | 普通失败、后续分页失败、批量逐项失败；默认/自定义名称、错误码和退出码 | `TestProductBackendErrorsCLI`；race + 三轮乱序 | PASS |
+| 批量终止错误 | 批量执行器 → 注入调用边界 | 鉴权终止、默认/自定义名称、空/缺失 Source 回退、错误身份与状态保留 | `TestBatchTerminalErrorProductName`；HTTP 401 的既有错误不携带工具名，此处用注入错误覆盖替换分支 | PASS |
+| 批量帮助 | 产品 CLI help 与默认命令树 | 仅绑定 shortcut、不同工具名；默认帮助保持原文 | `TestProductBatchHelpCLI`、`TestCommandRegistryDefaultTreeUnchanged` | PASS |
+| 最终产物 | 实际开源导出树编译与测试 | 无私有实现/私有变量读取/替代映射；无内仓依赖 | `opensource-sync-build.sh`；导出扫描、构建、测试及产物差分 | PASS |
+| 真实联调 | 导出后的官方 CLI | `user me --format json`，退出 0，返回既有五个用户字段 | `ecab2ef7` 导出产物的既有只读证据，未记录用户信息；本轮未复跑 | PASS（仅该产物及命令） |
+| 其他真实场景 | 真实批量、分页及附件请求 | 需要指定测试记录及附件 | 已有本地 HTTP 证据；未构造真实测试数据 | BLOCKED |
+
+扩展的 HTTP Transport、目录来源和既有自定义器为调用方提供的进程内代码。取消依赖它们遵守 Context；不承诺终止不配合取消的代码。同一 Cobra App 不承诺顺序复用或并发执行；并发验证针对独立 App 实例及现有批量执行器。
+
+
+本地 `scripts/review.sh`（lint、许可证与全部测试）、`go test ./... -race -count=1 -timeout 300s` 和 CI 指定扩展包的三轮乱序测试均通过。默认行为差分覆盖官方入口的帮助/版本/配置/诊断，以及使用相同测试 CA 的公开入口请求、身份优先级、目录缓存与错误、批量/分页/user me、单段附件文件与退出码。比较忽略请求序号，保留业务参数、相关请求头和单段文件内容哈希；multipart 行为由既有附件测试验证，不计作二进制差分已覆盖。真实批量、分页与附件联调和发布验证不由本地服务测试替代。
+
+### 复验导出产物
+
+`scripts/compare-cli-exports.py` 仅依赖 Python 3.9+、Go 和 OpenSSL，接收两份已导出的源码树及一个不存在的输出目录。它构建两份官方入口和使用相同本地测试 CA 的请求入口，输出逐项结果与 `comparison.json`，任何差异使进程失败。测试身份、目录、HTTP 返回和附件均为本地合成数据，不读取真实登录身份。31 组包含一个无关环境变量场景；这项不等同于扫描或验证任何特定私有集成。
+
+在内部源码仓库根目录执行（导出脚本另需 rsync）：
+
+```bash
+comparison_dir=$(mktemp -d)
+mkdir "$comparison_dir/baseline-src"
+git archive 07e8c81c9e7a9cd50893554e342e901c81664be6 | tar -x -C "$comparison_dir/baseline-src"
+bash "$comparison_dir/baseline-src/scripts/opensource-sync-build.sh" "$comparison_dir/baseline-export"
+bash scripts/opensource-sync-build.sh "$comparison_dir/candidate-export"
+python3 scripts/compare-cli-exports.py \
+  "$comparison_dir/baseline-export" "$comparison_dir/candidate-export" \
+  "$comparison_dir/results" --candidate-ref "$(git rev-parse HEAD)"
+```
+
+候选树应为干净的已提交状态；有未提交修改时，`--candidate-ref` 应明确标记快照，不能把结果归于未包含这些修改的提交。脚本比较 stdout/stderr、退出码、业务请求及相关头部和单段附件内容哈希；请求 ID 忽略，批量请求顺序排序。它不覆盖真实服务、多段附件或同一 App 跨请求复用，也不替代 CI 的 Go 环境验证。
+
+## 显式 Go Handler 命令
+
+`ProductConfig.Handlers` 可选，类型为 `map[string]executor.Handler`。命令节点通过 `Meta.Tags[TagExecutorKind] = ExecutorKindHandler` 显式选择 Handler，并以 `HandlerRef` 查找实现；未声明执行类型的命令继续使用 MCP。空引用、缺失或 nil 实现、未知执行类型、命令路径或别名冲突均在产品构造时失败，不回退到其他执行路径或身份。
+
+Handler 可以位于现有命令树的任意层级，也可以与普通 Tool 命令共享同一父节点。公共层不规定业务 namespace、命名或筛选规则；这些策略由私有产品层维护。自定义 `ProductRegistry.Setup` 返回最终命令树，`MappedCommands` 保留工具定义快照用于既有提示；移除某个普通命令节点不需要删除 Handler 持有的工具定义或业务客户端。不要为了注册业务 Handler 扩展内置 `ShortcutKind`。
+
+以下中性示例位于同一 Go Module 内，省略 import；`businessClient` 和 `fileClient` 沿用显式装配的必填依赖：
+
+```go
+type sampleRegistry struct { registry.RegistrySetup }
+func (sampleRegistry) MappedCommands() []types.MappedCommand { return nil }
+
+setup := sampleRegistry{registry.NewStaticSetup(&registry.CommandTree{
+    Nodes: []*registry.CommandNode{{
+        Name: "sample", Help: registry.HelpText{Brief: "Sample commands"},
+        Children: []*registry.CommandNode{{
+            Name: "record", Help: registry.HelpText{Brief: "Record commands"},
+            Children: []*registry.CommandNode{{
+                Name: "echo", HandlerRef: "sample.echo",
+                Help: registry.HelpText{Brief: "Echo a sample value"},
+                Flags: []registry.FlagDef{{Name: "value", Type: registry.FlagTypeString, Required: true}},
+                Meta: registry.NodeMeta{Tags: map[string]string{
+                    meegle.TagExecutorKind: meegle.ExecutorKindHandler,
+                }},
+            }},
+        }},
+    }},
+})}
+app, err := meegle.NewProductApp(ctx, meegle.ProductConfig{
+    Name: "sample-cli", Version: "1.0.0", Registry: setup,
+    BusinessClient: businessClient, FileClient: fileClient,
+    Handlers: map[string]executor.Handler{
+        "sample.echo": func(ctx context.Context, req *executor.Request) (*executor.RawResult, error) {
+            if err := ctx.Err(); err != nil { return nil, err }
+            return &executor.RawResult{Data: map[string]any{"value": req.Values["value"]}}, nil
+        },
+    },
+})
+if err != nil { return err }
+return app.Execute(ctx, []string{"sample", "record", "echo", "--value", "hello", "--format", "json"})
+```
+
+Handler 收到本次调用的 Context、合并后的参数和输出选项。参数采用声明的 CLI flag 名称，复用 `--params`、`--set` 与显式 flag 优先级；已声明的 snake_case 参数名归一为对应 kebab-case flag。必填、枚举及声明类型在调用前校验，数值保留精度。全局参数、父节点参数和当前节点参数均参与校验。`--params` / `--set` 中未声明的顶层参数在执行前报 `CLIENT_INVALID_VALUE`，dry-run 也遵守此校验；内置选项允许使用，object 内部字段不受顶层参数名校验限制。`help`、自行装配的 `inspect` 和 `--dry-run` 不调用 Handler；dry-run 使用现有归一化请求输出。
+
+未显式传入且未配置默认值的可选 `object` / `object-slice` flag 沿用现有框架默认值，Handler 收到空字符串；显式传入并校验通过后分别为 `map[string]any` / `[]map[string]any`。Handler 可通过 `req.Command.ExplicitFlags` 判断是否显式传入，再读取对应值，避免对未传参数直接做对象类型断言。
+
+Handler 返回 `executor.RawResult` 或 error，不直接输出最终 JSON，也不退出进程。nil 结果、结果内错误、typed nil 错误、panic 和不可序列化结果均失败；合法 JSON null 数据允许返回。Data/Metadata 在共享输出前转换为独立的 JSON 数据快照，数值保留为 `json.Number`，自定义序列化器不会在输出阶段重复调用。`--select`、`--envelope`、格式选项和错误输出继续由现有流程处理。
+
+注册集合和命令路由元数据由每个 App 独立保存，无全局 Handler 表。继续遵守“一次执行创建一个 App”；Handler 可调用独立 App，不能重入同一 App。闭包及客户端由调用方管理，复用时须满足自身的并发约束。Handler 与序列化器同步执行，必须配合 Context 并清理自己的资源；取消或超时后不发布成功结果，不承诺强制终止不配合取消的进程内代码。
+
+## Go Handler 接入验收
+
+基线：`cdec89e056931b6092bc6ceea3cebb58b909503c`。本节仅覆盖同一 Go Module 内的显式产品装配，不代表私有产品或 Sidecar 已完成联调。
+
+| 需求 | 可观察行为与测试边界 | 正向与失败场景 | 证据 | 状态 |
+|---|---|---|---|---|
+| 默认行为 | 基线与候选开源 CLI 进程 | 命令、参数、请求、输出、错误、退出码一致 | `scripts/compare-cli-exports.py`，既有 CLI 集成测试 | PASS |
+| 显式 Handler | 产品 CLI → Handler / 本地 HTTP | 参数及 Handler 实收声明类型、输出选项、结果；与动态命令共存；隐藏普通命令仍可调用后端工具 | `TestProductHandler*` | PASS |
+| 无意外执行 | CLI help / inspect / dry-run / 参数校验 | Handler 与业务调用次数为零；缺失、非法及未知顶层参数执行前失败 | `TestProductHandler*` | PASS |
+| 失败与取消 | CLI 错误输出及 Handler Context | 缺失/nil 引用、返回错误、nil 结果、结果错误、不可序列化结果、panic、取消、超时；不回退 | `TestProductHandler*` | PASS |
+| 隔离与冲突 | 独立产品 App 与最终命令树 | 多级路径及祖先参数、相同引用不同实现、输入快照、路径/别名冲突、重入到独立实例、重复/乱序/race | `TestProductHandler*`，完整 race 与三轮乱序 | PASS |
+
+验证在与提交源码一致的干净目录运行，使用同一 Go 工具链和模块依赖。`scripts/review.sh`、全量 `go test ./... -race -count=1 -timeout 300s`、CI 指定扩展包的 `-shuffle=on -count=3`、开源导出扫描/构建/测试全部通过。`compare-cli-exports.py --baseline-ref cdec89e056931b6092bc6ceea3cebb58b909503c` 的 31 组二进制对照全部通过；基线和候选分别使用对应源码导出的目录。真实私有产品与 Sidecar 未联调。

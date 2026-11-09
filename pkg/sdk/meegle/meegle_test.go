@@ -9,8 +9,68 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	frameworkoutput "github.com/larksuite/meegle-cli/pkg/framework/output"
 )
+
+func TestNewClient_DiscoveryPreservesRetryAdvice(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		wantCode string
+	}{
+		{name: "HTTP 503", wantCode: "SERVER_HTTP_ERROR"},
+		{name: "JSON-RPC error", wantCode: "SERVER_CALL_FAILED"},
+		{name: "client timeout", wantCode: "SERVER_TIMEOUT"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var rpc struct {
+					ID     int64  `json:"id"`
+					Method string `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil || rpc.Method != "tools/list" {
+					t.Errorf("expected tools/list, got %q, %v", rpc.Method, err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				switch test.name {
+				case "HTTP 503":
+					w.WriteHeader(http.StatusServiceUnavailable)
+				case "JSON-RPC error":
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"jsonrpc": "2.0", "id": rpc.ID,
+						"error": map[string]any{"code": -32603, "message": "discovery unavailable"},
+					})
+				case "client timeout":
+					<-r.Context().Done()
+				}
+			}))
+			defer server.Close()
+			previousClient := http.DefaultClient
+			http.DefaultClient = server.Client()
+			http.DefaultClient.Timeout = 500 * time.Millisecond
+			t.Cleanup(func() { http.DefaultClient = previousClient })
+
+			client, err := NewClient(server.URL, WithToken("sdk-token"))
+			if client != nil || err == nil {
+				t.Fatalf("NewClient() = %v, %v, want discovery error", client, err)
+			}
+			record := frameworkoutput.BuildErrorRecord(err)
+			if record["code"] != test.wantCode || record["retryable"] != true || calls.Load() != 1 {
+				t.Fatalf("discovery contract = %#v, requests = %d", record, calls.Load())
+			}
+			if test.name == "client timeout" && (record["message"] != "request timed out, please check your network connection and retry" ||
+				record["suggestion"] != "check your network or try again later") {
+				t.Fatalf("discovery timeout hints changed: %#v", record)
+			}
+		})
+	}
+}
 
 func TestNewClient_DiscoveryFailure(t *testing.T) {
 	_, err := NewClient("example.com", WithToken("test"))

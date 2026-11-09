@@ -21,6 +21,7 @@ import (
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
+	"github.com/larksuite/meegle-cli/pkg/framework/router"
 )
 
 var dynamicCommandNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -280,6 +281,12 @@ func mapAndSanitizeTools(tools []types.ToolDefinition, globalFlags []registry.Fl
 		if dynamic.IsFallbackTool(tool.Name) {
 			continue
 		}
+		if command, issue := dynamic.MapToolName(tool); issue != nil {
+			wireIssues = append(wireIssues, ToolMappingIssue{Code: issue.Code, ToolName: tool.Name, Path: issue.Path})
+			continue
+		} else if command.ToolName != "" {
+			continue
+		}
 		if tool.Metadata == nil {
 			wireIssues = append(wireIssues, ToolMappingIssue{Code: "missing_mapping", ToolName: tool.Name})
 			continue
@@ -317,8 +324,19 @@ func (s *DynamicRegistrySetup) MappingIssues() []ToolMappingIssue {
 }
 
 func sanitizeMappedCommands(commands []types.MappedCommand, globalFlags []registry.FlagDef) ([]types.MappedCommand, []ToolMappingIssue) {
+	return validateMappedCommands(commands, globalFlags, true)
+}
+
+func validateMappedCommands(commands []types.MappedCommand, globalFlags []registry.FlagDef, defaultBindings bool) ([]types.MappedCommand, []ToolMappingIssue) {
+	// Literal names must not displace existing mappings through a case-only
+	// resource or method collision, regardless of directory order.
+	commands = append([]types.MappedCommand(nil), commands...)
+	sort.SliceStable(commands, func(i, j int) bool {
+		return !isToolNameCommand(commands[i]) && isToolNameCommand(commands[j])
+	})
 	accepted := make([]types.MappedCommand, 0, len(commands))
 	pathIndex := make(map[string]int, len(commands))
+	resourceNames := make(map[string]string)
 	var issues []ToolMappingIssue
 	issue := func(code string, command types.MappedCommand) {
 		issues = append(issues, ToolMappingIssue{
@@ -328,15 +346,16 @@ func sanitizeMappedCommands(commands []types.MappedCommand, globalFlags []regist
 	}
 
 	for _, command := range commands {
-		if _, reserved := reservedDynamicResources[command.Resource]; reserved {
+		resourceKey := strings.ToLower(command.Resource)
+		if _, reserved := reservedDynamicResources[resourceKey]; reserved {
 			issue("reserved_path", command)
 			continue
 		}
-		if owner, reserved := dynamic.FallbackToolForPath(command.Resource, command.Method); reserved && owner != command.ToolName {
+		if owner, reserved := dynamic.FallbackToolForPath(resourceKey, strings.ToLower(command.Method)); defaultBindings && reserved && owner != command.ToolName {
 			issue("reserved_path", command)
 			continue
 		}
-		if !dynamicCommandNamePattern.MatchString(command.Resource) || !dynamicCommandNamePattern.MatchString(command.Method) {
+		if !isToolNameCommand(command) && (!dynamicCommandNamePattern.MatchString(command.Resource) || !dynamicCommandNamePattern.MatchString(command.Method)) {
 			issue("invalid_command", command)
 			continue
 		}
@@ -379,21 +398,36 @@ func sanitizeMappedCommands(commands []types.MappedCommand, globalFlags []regist
 
 		// Validate each untrusted entry independently before it can poison the
 		// aggregate tree. Cross-entry path conflicts are handled below.
-		candidate := buildCommandTree([]types.MappedCommand{command})
+		var candidate *registry.CommandTree
+		if defaultBindings {
+			candidate = buildCommandTree([]types.MappedCommand{command})
+		} else {
+			candidate = buildOrdinaryCommandTree([]types.MappedCommand{command})
+		}
 		if validation := registry.ValidateTree(candidate); validation.HasErrors() {
 			issue("invalid_command", command)
 			continue
 		}
 
-		path := command.Resource + "/" + command.Method
+		path := strings.ToLower(command.Resource + "/" + command.Method)
 		if _, exists := pathIndex[path]; exists {
 			issue("duplicate_path", command)
 			continue
 		}
+		if name, exists := resourceNames[resourceKey]; exists && name != command.Resource {
+			issue("conflicting_resource_case", command)
+			continue
+		}
+		resourceNames[resourceKey] = command.Resource
 		pathIndex[path] = len(accepted)
 		accepted = append(accepted, command)
 	}
 	return accepted, issues
+}
+
+func isToolNameCommand(command types.MappedCommand) bool {
+	mapped, issue := dynamic.MapToolName(types.ToolDefinition{Name: command.ToolName})
+	return issue == nil && mapped.ToolName != "" && mapped.Resource == command.Resource && mapped.Method == command.Method
 }
 
 // AuthFailed reports whether the last Setup call treated the user as
@@ -555,6 +589,14 @@ func isUnauthorizedErr(err error) bool {
 // buildCommandTree converts a MappedCommand list into a CommandTree.
 // Groups by resource as first-level CommandNode, method as second-level CommandNode.
 func buildCommandTree(commands []types.MappedCommand) *registry.CommandTree {
+	tree := buildOrdinaryCommandTree(commands)
+	injectSugarCommands(tree.Nodes)
+	tree.Nodes = injectAttachmentCommands(tree.Nodes)
+	injectBatchCommands(tree.Nodes)
+	return tree
+}
+
+func buildOrdinaryCommandTree(commands []types.MappedCommand) *registry.CommandTree {
 	// Group by resource
 	groups := make(map[string][]types.MappedCommand)
 	for _, cmd := range commands {
@@ -571,6 +613,7 @@ func buildCommandTree(commands []types.MappedCommand) *registry.CommandTree {
 	nodes := make([]*registry.CommandNode, 0, len(groupNames))
 	for _, groupName := range groupNames {
 		cmds := groups[groupName]
+		groupTags := make(map[string]string)
 		// Sort children by method
 		sort.Slice(cmds, func(i, j int) bool {
 			return cmds[i].Method < cmds[j].Method
@@ -592,6 +635,10 @@ func buildCommandTree(commands []types.MappedCommand) *registry.CommandTree {
 				}
 			}
 			tags := make(map[string]string)
+			if isToolNameCommand(cmd) {
+				tags[registry.TagLiteralCommandName] = "true"
+				groupTags[registry.TagLiteralCommandName] = "true"
+			}
 			if len(paramTypes) > 0 {
 				typesJSON, _ := json.Marshal(paramTypes)
 				tags["mcp_param_types"] = string(typesJSON)
@@ -628,18 +675,9 @@ func buildCommandTree(commands []types.MappedCommand) *registry.CommandTree {
 				Brief: desc,
 			},
 			Children: children,
+			Meta:     registry.NodeMeta{Tags: groupTags},
 		})
 	}
-
-	// Inject sugar commands
-	injectSugarCommands(nodes)
-	// Inject the attachment +upload-entire / +download-entire shortcuts under
-	// the MCP-discovered attachment group. The basic prepare-upload /
-	// prepare-download commands themselves come from the MCP path via
-	// dynamic.fallbackTable, so this only adds the scenario shortcuts.
-	nodes = injectAttachmentCommands(nodes)
-	// Inject batch commands (one CLI command calling an MCP tool N times).
-	injectBatchCommands(nodes)
 
 	return &registry.CommandTree{
 		Version: "dynamic",
@@ -727,7 +765,7 @@ type ResultTransformFunc func(data any) any
 var sugarResultTransforms map[string]ResultTransformFunc
 
 // sugarCommands defines the sugar commands to be injected.
-var sugarCommands = []struct {
+type sugarCommand struct {
 	Group           string              // Parent resource group name
 	Name            string              // Subcommand name
 	Brief           string              // Short description
@@ -735,7 +773,9 @@ var sugarCommands = []struct {
 	Flags           []registry.FlagDef  // User-provided parameters
 	FixedParams     map[string]any      // Fixed injected parameters
 	ResultTransform ResultTransformFunc // Custom result transformation
-}{
+}
+
+var sugarCommands = []sugarCommand{
 	{
 		Group:       "user",
 		Name:        "me",
@@ -788,25 +828,235 @@ func injectSugarCommands(nodes []*registry.CommandNode) {
 			if node.Name != sugar.Group {
 				continue
 			}
-			tags := make(map[string]string)
-			if len(sugar.FixedParams) > 0 {
-				b, _ := json.Marshal(sugar.FixedParams)
-				tags["mcp_fixed_params"] = string(b)
-			}
-			node.Children = append(node.Children, &registry.CommandNode{
-				Name:       sugar.Name,
-				Help:       registry.HelpText{Brief: sugar.Brief},
-				Flags:      sugar.Flags,
-				HandlerRef: sugar.HandlerRef,
-				Meta: registry.NodeMeta{
-					CommandID: "sugar:" + sugar.Group + "/" + sugar.Name,
-					Source:    "sugar",
-					Risk:      riskForTool(sugar.HandlerRef),
-					ToolName:  sugar.HandlerRef,
-					Tags:      tags,
-				},
-			})
+			node.Children = append(node.Children, buildSugarCommand(sugar))
 			break
 		}
 	}
+}
+
+func buildSugarCommand(sugar sugarCommand) *registry.CommandNode {
+	tags := make(map[string]string)
+	if len(sugar.FixedParams) > 0 {
+		b, _ := json.Marshal(sugar.FixedParams)
+		tags["mcp_fixed_params"] = string(b)
+	}
+	return &registry.CommandNode{
+		Name:       sugar.Name,
+		Help:       registry.HelpText{Brief: sugar.Brief},
+		Flags:      sugar.Flags,
+		HandlerRef: sugar.HandlerRef,
+		Meta: registry.NodeMeta{
+			CommandID: "sugar:" + sugar.Group + "/" + sugar.Name,
+			Source:    "sugar",
+			Risk:      riskForTool(sugar.HandlerRef),
+			ToolName:  sugar.HandlerRef,
+			Tags:      tags,
+		},
+	}
+}
+
+// ResultMode selects an existing product transform or preserves backend data.
+// DefaultResult retains the built-in behavior for the selected command path.
+type ResultMode string
+
+const (
+	DefaultResult     ResultMode = ""
+	RawResult         ResultMode = "raw"
+	CurrentUserResult ResultMode = "current-user"
+)
+
+const tagResultMode = "meegle_result_mode"
+
+// CommandDefinition is an already mapped and selected ordinary command.
+// Tool replacement and directory admission are owned by the caller.
+type CommandDefinition struct {
+	Command types.MappedCommand
+	Result  ResultMode
+}
+
+// ShortcutKind identifies a built-in scenario, including its public parameters.
+type ShortcutKind string
+
+const (
+	ShortcutCurrentUser ShortcutKind = "current-user"
+	ShortcutBatchGet    ShortcutKind = "batch-get"
+	ShortcutUpload      ShortcutKind = "upload"
+	ShortcutDownload    ShortcutKind = "download"
+)
+
+// ShortcutBinding explicitly binds one built-in scenario to a tool and schema.
+// The tool need not also be exposed as an ordinary command. Non-user scenarios
+// preserve their existing aggregate/file result and accept only DefaultResult.
+type ShortcutBinding struct {
+	Kind       ShortcutKind
+	ToolName   string
+	Parameters []types.ToolParameter
+	Result     ResultMode
+}
+
+// CommandRegistrySetup stores immutable command definitions. Each Setup call
+// builds a fresh tree; returned trees and snapshots never alias the inputs.
+type CommandRegistrySetup struct {
+	commands  []CommandDefinition
+	shortcuts []ShortcutBinding
+}
+
+// NewCommandRegistry registers exactly the supplied commands and shortcuts.
+// Empty slices register nothing. Invalid definitions fail the whole explicit
+// registry instead of silently selecting a different tool or fallback mapping.
+func NewCommandRegistry(commands []CommandDefinition, shortcuts []ShortcutBinding) (*CommandRegistrySetup, error) {
+	s := &CommandRegistrySetup{
+		commands:  append([]CommandDefinition(nil), commands...),
+		shortcuts: append([]ShortcutBinding(nil), shortcuts...),
+	}
+	for i := range s.commands {
+		s.commands[i].Command = cloneMappedCommands([]types.MappedCommand{commands[i].Command})[0]
+	}
+	for i := range s.shortcuts {
+		s.shortcuts[i].Parameters = cloneMappedCommands([]types.MappedCommand{{Parameters: shortcuts[i].Parameters}})[0].Parameters
+	}
+	if _, err := s.Setup(context.Background()); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *CommandRegistrySetup) Setup(ctx context.Context) (*registry.CommandTree, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, explicitRegistryError("registry is nil")
+	}
+	mapped := make([]types.MappedCommand, len(s.commands))
+	for i, definition := range s.commands {
+		if !validResultMode(definition.Result) {
+			return nil, explicitRegistryError("unknown result mode")
+		}
+		mapped[i] = definition.Command
+	}
+	accepted, issues := validateMappedCommands(mapped, registry.BuiltinFlags, false)
+	if len(issues) != 0 {
+		return nil, explicitRegistryError(fmt.Sprintf("invalid command definition: %s (%s)", issues[0].Path, issues[0].Code))
+	}
+	tree := buildOrdinaryCommandTree(accepted)
+	for _, definition := range s.commands {
+		group := findNodeByName(tree.Nodes, definition.Command.Resource)
+		node := findChild(group, definition.Command.Method)
+		node.Meta.Tags[tagResultMode] = string(definition.Result)
+	}
+	for _, binding := range s.shortcuts {
+		groupName, node, err := buildBoundShortcut(binding)
+		if err != nil {
+			return nil, err
+		}
+		group := findNodeByName(tree.Nodes, groupName)
+		if group == nil {
+			group = &registry.CommandNode{Name: groupName, Help: registry.HelpText{Brief: resourceDescriptions[groupName]}}
+			tree.Nodes = append(tree.Nodes, group)
+		}
+		for _, existing := range group.Children {
+			for _, name := range append([]string{existing.Name}, existing.Aliases...) {
+				for _, added := range append([]string{node.Name}, node.Aliases...) {
+					if strings.EqualFold(name, added) {
+						return nil, explicitRegistryError("duplicate shortcut path")
+					}
+				}
+			}
+		}
+		group.Children = append(group.Children, node)
+	}
+	if validation := registry.ValidateTree(tree); validation.HasErrors() {
+		return nil, explicitRegistryError(validation.Error())
+	}
+	return tree, nil
+}
+
+func (s *CommandRegistrySetup) MappedCommands() []types.MappedCommand {
+	if s == nil {
+		return nil
+	}
+	commands := make([]types.MappedCommand, 0, len(s.commands)+len(s.shortcuts))
+	for _, definition := range s.commands {
+		commands = append(commands, definition.Command)
+	}
+	for _, binding := range s.shortcuts {
+		group, node, err := buildBoundShortcut(binding)
+		if err == nil {
+			commands = append(commands, types.MappedCommand{Resource: group, Method: node.Name, ToolName: binding.ToolName, Parameters: binding.Parameters})
+		}
+	}
+	return cloneMappedCommands(commands)
+}
+
+func explicitRegistryError(message string) error {
+	return meerrors.NewClientError("CLIENT_MISCONFIGURED", message)
+}
+
+func validResultMode(mode ResultMode) bool {
+	return mode == DefaultResult || mode == RawResult || mode == CurrentUserResult
+}
+
+func buildBoundShortcut(binding ShortcutBinding) (string, *registry.CommandNode, error) {
+	if strings.TrimSpace(binding.ToolName) == "" || !validResultMode(binding.Result) {
+		return "", nil, explicitRegistryError("shortcut tool and valid result mode are required")
+	}
+	if binding.Kind != ShortcutCurrentUser && binding.Result != DefaultResult {
+		return "", nil, explicitRegistryError("aggregate and file shortcuts use their built-in result format")
+	}
+	// Validate dependency parameters through the same ordinary command path.
+	dependency := types.MappedCommand{Resource: "dependency", Method: "call", ToolName: binding.ToolName, Parameters: binding.Parameters}
+	accepted, issues := validateMappedCommands([]types.MappedCommand{dependency}, registry.BuiltinFlags, false)
+	if len(issues) != 0 {
+		return "", nil, explicitRegistryError("invalid shortcut dependency schema")
+	}
+	sibling := buildOrdinaryCommandTree(accepted).Nodes[0].Children[0]
+	switch binding.Kind {
+	case ShortcutCurrentUser:
+		sugar := sugarCommands[0]
+		sugar.HandlerRef = binding.ToolName
+		node := buildSugarCommand(sugar)
+		node.Meta.Tags[tagResultMode] = string(binding.Result)
+		return sugar.Group, node, nil
+	case ShortcutBatchGet:
+		bc := &batchCommands[0]
+		if !hasToolParameter(binding.Parameters, bc.PerItemParam) {
+			return "", nil, explicitRegistryError("batch dependency requires its per-item parameter")
+		}
+		node := buildBatchCommand(bc, sibling)
+		node.Help.Brief = "Batch-read items by IDs using the bound single-item tool."
+		node.Help.Long = buildBatchLongHelp(bc, "the bound single-item tool")
+		return bc.Group, node, nil
+	case ShortcutUpload, ShortcutDownload:
+		for _, shortcut := range attachmentShortcuts {
+			if shortcut.Kind == string(binding.Kind) {
+				return "attachment", buildAttachmentCommand("attachment", shortcut, sibling), nil
+			}
+		}
+	}
+	return "", nil, explicitRegistryError("unknown shortcut kind")
+}
+
+func hasToolParameter(parameters []types.ToolParameter, name string) bool {
+	for _, parameter := range parameters {
+		if parameter.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func commandResultTransform(parsed *router.ParsedCommand) ResultTransformFunc {
+	if parsed == nil {
+		return nil
+	}
+	if parsed.Node != nil {
+		switch ResultMode(parsed.Node.Meta.Tags[tagResultMode]) {
+		case RawResult:
+			return nil
+		case CurrentUserResult:
+			return LookupResultTransform([]string{"user", "me"})
+		}
+	}
+	return LookupResultTransform(parsed.FullPath)
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,50 @@ import (
 	"testing"
 	"time"
 
+	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
+	frameworkoutput "github.com/larksuite/meegle-cli/pkg/framework/output"
 )
+
+type retryAdviceRoundTripper func(*http.Request) (*http.Response, error)
+
+func (fn retryAdviceRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func TestCallToolRetryAdvice(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		failure  error
+		wantCode string
+	}{
+		{name: "timeout", failure: context.DeadlineExceeded, wantCode: "SERVER_TIMEOUT"},
+		{name: "cancellation", failure: context.Canceled},
+		{name: "connection reset", failure: errors.New("connection reset")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client := New("https://mock.example/mcp", WithHTTPClient(&http.Client{
+				Transport: retryAdviceRoundTripper(func(*http.Request) (*http.Response, error) {
+					calls++
+					return nil, test.failure
+				}),
+			}))
+			_, err := client.CallTool(context.Background(), "add_comment", nil)
+			if err == nil || frameworkoutput.BuildErrorRecord(err)["retryable"] != false || calls != 1 {
+				t.Fatalf("error = %v, calls = %d; want non-retryable failure with one call", err, calls)
+			}
+			var me *meerrors.MeegleError
+			if test.wantCode == "" {
+				if errors.As(err, &me) || !errors.Is(err, test.failure) {
+					t.Fatalf("transport failure classification changed: %v", err)
+				}
+			} else if !errors.As(err, &me) || me.Code != test.wantCode || me.ExitCode != 2 || !strings.Contains(me.Suggestion, "operation result") {
+				t.Fatalf("timeout contract = %#v", err)
+			}
+		})
+	}
+}
 
 func makeRPCResponse(id int64, result json.RawMessage) jsonRPCResponse {
 	return jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: result}
@@ -680,5 +723,47 @@ func TestCredentialRedirectGuard_StopsSameOriginLoopAtTenHops(t *testing.T) {
 				t.Fatalf("redirect requests = %d, want 10", got)
 			}
 		})
+	}
+}
+
+func TestDecodeToolDirectoryMatchesListTools(t *testing.T) {
+	for _, payload := range []string{
+		`{"tools":[]}`,
+		`{"tools":[{"name":"sample_get","inputSchema":{"type":"object","properties":{"id":{"type":["integer","null"]}},"required":["id"]}}]}`,
+		`{"tools":[{"name":"bad","inputSchema":{"type":"array"}},{"name":"valid"}]}`,
+		`{"tools":[{"name":"bad","metadata":"invalid"},{"name":"valid"}]}`,
+		`{"tools":[{"name":"bad","inputSchema":{"properties":{"id":{"type":["integer","string"]}}}}]}`,
+		`{"tools":"bad"}`,
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":%s}`, payload)
+		}))
+		fromHTTP, httpErr := New(server.URL).ListTools(context.Background())
+		decoded, decodeErr := DecodeToolDirectory([]byte(payload))
+		server.Close()
+		left, _ := json.Marshal(fromHTTP)
+		right, _ := json.Marshal(decoded)
+		if string(left) != string(right) || fmt.Sprint(httpErr) != fmt.Sprint(decodeErr) {
+			t.Fatalf("payload=%s HTTP=%s/%v decoded=%s/%v", payload, left, httpErr, right, decodeErr)
+		}
+	}
+}
+
+func TestDecodeToolDirectoryLimits(t *testing.T) {
+	if _, err := DecodeToolDirectory([]byte(strings.Repeat(" ", maxToolsListResponseBytes+1))); err == nil {
+		t.Fatal("oversized input accepted")
+	}
+	if _, err := DecodeToolDirectory([]byte(`{"tools":[]} trailing`)); err == nil {
+		t.Fatal("trailing data accepted")
+	}
+	large := `{"name":"oversized","description":"` + strings.Repeat("x", maxToolDefinitionBytes) + `"}`
+	tools, err := DecodeToolDirectory([]byte(`{"tools":[` + large + `,{"name":"valid"}]}`))
+	if err != nil || len(tools) != 2 || tools[0].Issue == nil || tools[0].Issue.Code != "tool_definition_too_large" || tools[1].Name != "valid" {
+		t.Fatalf("tools=%v err=%v", tools, err)
+	}
+	many := strings.TrimSuffix(strings.Repeat(`{"name":"sample"},`, maxDiscoveredTools+1), ",")
+	tools, err = DecodeToolDirectory([]byte(`{"tools":[` + many + `]}`))
+	if err != nil || len(tools) != maxDiscoveredTools+1 || tools[maxDiscoveredTools].Issue.Code != "tool_count_limit_exceeded" {
+		t.Fatalf("count=%d err=%v", len(tools), err)
 	}
 }

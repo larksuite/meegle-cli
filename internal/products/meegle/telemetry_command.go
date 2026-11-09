@@ -289,6 +289,9 @@ func telemetryErrorMetadata(err error, outcome string) (retryable bool, httpStat
 	var me *meerrors.MeegleError
 	if frameworkerrors.SafeAs(err, &me) && me != nil {
 		httpStatus = me.HTTPStatus
+		if me.Retryable != nil {
+			return me.IsRetryable(), httpStatus
+		}
 		if httpStatus != 0 {
 			return httpStatus == 429 || httpStatus >= 500, httpStatus
 		}

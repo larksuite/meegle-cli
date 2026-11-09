@@ -19,6 +19,10 @@ type MeegleError struct {
 	ExitCode   int    `json:"-"`
 	HTTPStatus int    `json:"-"`
 	Cause      error  `json:"-"`
+	// Retryable overrides the legacy exit-category default when a caller has
+	// an explicit retry decision. MCP tool failures use the backend's advice,
+	// defaulting to false when that advice is unavailable or malformed.
+	Retryable *bool `json:"-"`
 }
 
 // Unwrap preserves the original extension/provider error for errors.Is/As
@@ -46,12 +50,26 @@ func (e *MeegleError) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// ErrorPayload implements frameworkoutput.ErrorPayloadBuilder so the unified
-// format layer picks up MeegleError's suggestion and exit-code-derived
-// retryable flag without a separate conversion helper. Retryable is derived
-// from ExitCode: 2 (server) → true, anything else → false, matching the
-// CLIError category rule. Suggestion is surfaced as an optional field so
-// agents still receive the human hint alongside the required triple.
+// IsRetryable reports the explicit retry decision, preserving the legacy
+// exit-category default for callers that do not supply one.
+func (e *MeegleError) IsRetryable() bool {
+	if e == nil {
+		return false
+	}
+	if e.Retryable != nil {
+		return *e.Retryable
+	}
+	return e.ExitCode == 2
+}
+
+// WithRetryable sets retry advice independently of the error code and exit code.
+func (e *MeegleError) WithRetryable(retryable bool) *MeegleError {
+	e.Retryable = &retryable
+	return e
+}
+
+// ErrorPayload supplies the stable error record and optional suggestion to
+// the unified format layer.
 func (e *MeegleError) ErrorPayload() map[string]any {
 	if e == nil {
 		return nil
@@ -59,7 +77,7 @@ func (e *MeegleError) ErrorPayload() map[string]any {
 	rec := map[string]any{
 		"code":      strings.TrimSpace(e.Code),
 		"message":   strings.TrimSpace(e.Message),
-		"retryable": e.ExitCode == 2,
+		"retryable": e.IsRetryable(),
 	}
 	if hint := strings.TrimSpace(e.Suggestion); hint != "" {
 		rec["suggestion"] = hint

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/auth"
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
@@ -2182,10 +2183,8 @@ func TestMergePayloads(t *testing.T) {
 	}
 }
 
-// page_token-based pagination where the backend keeps returning a non-empty
-// token but every page is empty. The step must stop after maxEmptyPageStreak
-// consecutive empty pages instead of looping to the 200-page cap.
-func TestAutoPaginateStep_PageTokenStopsOnEmptyStreak(t *testing.T) {
+// Repeated cursors must fail explicitly even when a follow-up page is empty.
+func TestAutoPaginateStep_PageTokenRejectsRepeatedCursor(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -2218,31 +2217,16 @@ func TestAutoPaginateStep_PageTokenStopsOnEmptyStreak(t *testing.T) {
 			"mcp.headers":    map[string]string{},
 		},
 	}
-	if err := step.Execute(context.Background(), state); err != nil {
-		t.Fatalf("auto-paginate step failed: %v", err)
+	err := step.Execute(context.Background(), state)
+	var me *meerrors.MeegleError
+	if !errors.As(err, &me) || me.Code != "SERVER_PAGINATION_INVALID" {
+		t.Fatalf("error = %v, want SERVER_PAGINATION_INVALID", err)
 	}
-
-	// Should stop after exactly maxEmptyPageStreak empty follow-up pages.
-	if callCount != maxEmptyPageStreak {
-		t.Errorf("expected %d follow-up calls (empty streak), got %d", maxEmptyPageStreak, callCount)
+	if callCount != 2 {
+		t.Errorf("requests = %d, want 2 before detecting repetition", callCount)
 	}
-
-	data := state.Result.Data.(map[string]any)
-	list, _ := data["list"].([]any)
-	if len(list) != 1 {
-		t.Errorf("expected original 1 item (no new items merged), got %d: %#v", len(list), list)
-	}
-	// The stuck token must be dropped so the caller isn't pointed at a dead continuation.
-	if _, exists := data["next_page_token"]; exists {
-		t.Errorf("next_page_token should be deleted after empty-streak stop")
-	}
-
-	meta := state.Result.Metadata
-	if meta["auto_paginated"] != true {
-		t.Errorf("expected auto_paginated=true, got %v", meta["auto_paginated"])
-	}
-	if _, truncated := meta["truncated"]; truncated {
-		t.Errorf("should not be marked truncated on empty-streak stop (no valid continuation)")
+	if state.Result.Metadata["auto_paginated"] == true {
+		t.Error("repeated cursor must not be reported as complete")
 	}
 }
 
@@ -2423,8 +2407,8 @@ func TestAutoPaginateStep_PageTokenPropagatesCallError(t *testing.T) {
 }
 
 // When a follow-up page returns a non-map response (e.g. a bare array or
-// string), AutoPaginateStep must stop gracefully without panicking.
-func TestAutoPaginateStep_PageTokenStopsOnNonMapResponse(t *testing.T) {
+// string), AutoPaginateStep must fail rather than report incomplete success.
+func TestAutoPaginateStep_PageTokenRejectsNonMapResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return a bare array instead of the expected map[string]any.
 		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, []any{"unexpected", "shape"}))
@@ -2450,8 +2434,10 @@ func TestAutoPaginateStep_PageTokenStopsOnNonMapResponse(t *testing.T) {
 			"mcp.headers":    map[string]string{},
 		},
 	}
-	if err := step.Execute(context.Background(), state); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := step.Execute(context.Background(), state)
+	var me *meerrors.MeegleError
+	if !errors.As(err, &me) || me.Code != "SERVER_PAGINATION_INVALID" {
+		t.Fatalf("error = %v, want SERVER_PAGINATION_INVALID", err)
 	}
 	// Should keep the original first-page data without merging the bad page.
 	data := state.Result.Data.(map[string]any)
@@ -2935,5 +2921,297 @@ func TestAutoPaginateStep_TokenTruncationHintUsesCorrectFlagName(t *testing.T) {
 	}
 	if strings.Contains(stderrOutput, "--page-token ") {
 		t.Errorf("stderr hint should NOT contain --page-token (wrong flag for this command), got:\n%s", stderrOutput)
+	}
+}
+
+// Exercise the executor and pagination steps over the actual MCP HTTP boundary.
+func TestAutoPaginateStep_WorkitemNestedToken(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body struct {
+			Params struct {
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		args := body.Params.Arguments
+		if args["project_key"] != "project" || args["work_item_id"] != "workitem" || args["fields"] != "_all" || args["page_size"] != float64(10) {
+			t.Errorf("query conditions changed: %#v", args)
+		}
+		payload := workitemPaginationPage([]any{"field-1"}, true, "cursor-2")
+		if calls == 2 {
+			if args["page_token"] != "cursor-2" {
+				t.Errorf("page_token = %v, want cursor-2", args["page_token"])
+			}
+			payload = workitemPaginationPage([]any{"field-2"}, false, "")
+			payload["work_item_current_node"] = []any{"later-node"}
+			payload["work_item_attribute"] = map[string]any{"id": "workitem", "later": true}
+		}
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+
+	state := workitemPaginationState(server.URL)
+	if err := (&McpExecutorStep{}).Execute(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&AutoPaginateStep{}).Execute(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("MCP requests = %d, want 2; auto-pagination returned only the first page", calls)
+	}
+	data := state.Result.Data.(map[string]any)
+	if got := fmt.Sprint(data["work_item_fields"]); got != "[field-1 field-2]" {
+		t.Errorf("fields = %s", got)
+	}
+	if got := fmt.Sprint(data["work_item_current_node"]); got != "[node]" {
+		t.Errorf("node snapshot duplicated: %s", got)
+	}
+	if attributes := data["work_item_attribute"].(map[string]any); attributes["id"] != "workitem" || len(attributes) != 1 {
+		t.Errorf("attributes must retain the first snapshot: %#v", attributes)
+	}
+	if got := state.Result.Metadata["total_items"]; got != 2 {
+		t.Errorf("total_items = %v, want field count 2", got)
+	}
+}
+
+func workitemPaginationPage(fields []any, more bool, token string) map[string]any {
+	return map[string]any{
+		"work_item_fields":       fields,
+		"work_item_current_node": []any{"node"},
+		"work_item_attribute":    map[string]any{"id": "workitem"},
+		"pagination": map[string]any{
+			"has_more": more, "next_page_token": token, "page_size": 10, "total": 101,
+		},
+	}
+}
+
+func workitemPaginationState(serverURL string) *pipeline.PipelineContext {
+	flags := map[string]any{
+		"project-key": "project", "work-item-id": "workitem", "fields": "_all", "page-size": 10,
+	}
+	return &pipeline.PipelineContext{
+		Parsed: &router.ParsedCommand{
+			Node: &registry.CommandNode{
+				HandlerRef: "get_workitem_brief",
+				Meta: registry.NodeMeta{Tags: map[string]string{
+					"mcp_param_types": `{"page-token":"string","page-size":"integer","project-key":"string","work-item-id":"string","fields":"string"}`,
+				}},
+			},
+			FullPath: []string{"workitem", "get"},
+			Flags:    map[string]any{"auto-paginate": true}, ExplicitFlags: flags,
+		},
+		Values: flags,
+		OutputConfig: map[string]any{
+			"mcp.server_url": serverURL, "mcp.token": "tok", "mcp.headers": map[string]string{},
+		},
+	}
+}
+
+func TestAutoPaginateStep_WorkitemTokenBoundaries(t *testing.T) {
+	page := func(fields []any, more bool, token string) any {
+		return workitemPaginationPage(fields, more, token)
+	}
+	for _, tt := range []struct {
+		name      string
+		pages     []any
+		wantErr   bool
+		wantCalls int
+		wantItems int
+	}{
+		{
+			name: "consecutive empty pages advance to later fields",
+			pages: []any{
+				page([]any{"a"}, true, "b"), page([]any{}, true, "c"),
+				page(nil, true, "d"), page([]any{}, true, "e"),
+				page([]any{}, true, "f"), page([]any{"z"}, false, ""),
+			},
+			wantCalls: 6, wantItems: 2,
+		},
+		{name: "repeated cursor", pages: []any{page([]any{"a"}, true, "b"), page([]any{}, true, "b")}, wantErr: true, wantCalls: 2},
+		{name: "cursor cycle", pages: []any{page([]any{"a"}, true, "b"), page([]any{"b"}, true, "c"), page([]any{"c"}, true, "b")}, wantErr: true, wantCalls: 3},
+		{name: "first page missing cursor", pages: []any{page([]any{"a"}, true, "")}, wantErr: true, wantCalls: 1},
+		{name: "later page missing cursor", pages: []any{page([]any{"a"}, true, "b"), page([]any{"b"}, true, "")}, wantErr: true, wantCalls: 2},
+		{name: "later page missing pagination", pages: []any{page([]any{"a"}, true, "b"), map[string]any{"work_item_fields": []any{"b"}}}, wantErr: true, wantCalls: 2},
+		{name: "later page invalid payload", pages: []any{page([]any{"a"}, true, "b"), []any{"unexpected"}}, wantErr: true, wantCalls: 2},
+		{name: "later page null payload", pages: []any{page([]any{"a"}, true, "b"), nil}, wantErr: true, wantCalls: 2},
+		{name: "terminal page can retain cursor", pages: []any{page([]any{"a"}, true, "b"), page([]any{"b"}, false, "b")}, wantCalls: 2, wantItems: 2},
+		{name: "all empty pages", pages: []any{page(nil, true, "b"), page(nil, false, "")}, wantCalls: 2, wantItems: 0},
+		{name: "first page already complete", pages: []any{page([]any{"a"}, false, "unused")}, wantCalls: 1, wantItems: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				index := calls
+				calls++
+				if index >= len(tt.pages) {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, tt.pages[index]))
+			}))
+			defer server.Close()
+			state := workitemPaginationState(server.URL)
+			if err := (&McpExecutorStep{}).Execute(context.Background(), state); err != nil {
+				t.Fatal(err)
+			}
+			err := (&AutoPaginateStep{}).Execute(context.Background(), state)
+			if tt.wantErr {
+				var me *meerrors.MeegleError
+				if !errors.As(err, &me) || me.Code != "SERVER_PAGINATION_INVALID" {
+					t.Errorf("error = %v, want explicit SERVER_PAGINATION_INVALID failure", err)
+				}
+				if state.Result.Metadata["auto_paginated"] == true {
+					t.Error("incomplete response marked successfully auto-paginated")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				data := state.Result.Data.(map[string]any)
+				if fields, _ := data["work_item_fields"].([]any); len(fields) != tt.wantItems {
+					t.Errorf("fields = %#v, want %d items", fields, tt.wantItems)
+				}
+				if calls > 1 && state.Result.Metadata["total_items"] != tt.wantItems {
+					t.Errorf("total_items = %v, want field count %d", state.Result.Metadata["total_items"], tt.wantItems)
+				}
+				if pg := data["pagination"].(map[string]any); pg["has_more"] != false {
+					t.Errorf("successful response still has_more: %#v", pg)
+				}
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("requests = %d, want %d", calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+func TestAutoPaginateStep_WorkitemTruncationAndResume(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body struct {
+			Params struct {
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		index := 0
+		if token, ok := body.Params.Arguments["page_token"].(string); ok {
+			if _, err := fmt.Sscanf(token, "cursor-%d", &index); err != nil {
+				t.Error(err)
+			}
+		}
+		payload := workitemPaginationPage([]any{fmt.Sprintf("field-%d", index)}, index < 200, fmt.Sprintf("cursor-%d", index+1))
+		// Logical field totals are not the number of returned field records.
+		payload["pagination"].(map[string]any)["total"] = 1
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, payload))
+	}))
+	defer server.Close()
+	state := workitemPaginationState(server.URL)
+	if err := (&MCPRuntime{}).Execute(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	meta := state.Result.Metadata
+	if calls != 200 || meta["pages_merged"] != 200 || meta["total_items"] != 200 || meta["truncated"] != true || meta["next_page_token"] != "cursor-200" {
+		t.Fatalf("requests = %d, truncation metadata = %#v", calls, meta)
+	}
+	data := state.Result.Data.(map[string]any)
+	pg := data["pagination"].(map[string]any)
+	if pg["has_more"] != true || pg["next_page_token"] != "cursor-200" || fmt.Sprint(pg["total"]) != "1" {
+		t.Fatalf("continuation missing from plain output: %#v", pg)
+	}
+	if got := len(data["work_item_current_node"].([]any)); got != 1 {
+		t.Fatalf("node count = %d, want 1", got)
+	}
+	resumed := workitemPaginationState(server.URL)
+	resumed.Values["page-token"] = meta["next_page_token"]
+	if err := (&MCPRuntime{}).Execute(context.Background(), resumed); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 201 || fmt.Sprint(resumed.Result.Data.(map[string]any)["work_item_fields"]) != "[field-200]" {
+		t.Fatalf("resume requests=%d data=%#v", calls, resumed.Result.Data)
+	}
+}
+
+func TestAutoPaginateStep_WorkitemWithoutAutoPagination(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, workitemPaginationPage([]any{"a"}, true, "b")))
+	}))
+	defer server.Close()
+	state := workitemPaginationState(server.URL)
+	state.Parsed.Flags["auto-paginate"] = false
+	if err := (&MCPRuntime{}).Execute(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	data := state.Result.Data.(map[string]any)
+	if calls != 1 || data["pagination"].(map[string]any)["next_page_token"] != "b" || state.Result.Metadata["auto_paginated"] != nil {
+		t.Fatalf("single-page behavior changed: calls=%d result=%#v", calls, state.Result)
+	}
+}
+
+func TestAutoPaginateStep_WorkitemPropagatesFailures(t *testing.T) {
+	for _, mode := range []string{"http", "rpc", "timeout", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var calls atomic.Int32
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				call := calls.Add(1)
+				if call < 3 {
+					_ = json.NewEncoder(w).Encode(mcpJSONResponse(t, workitemPaginationPage([]any{"field"}, true, fmt.Sprintf("cursor-%d", call))))
+					return
+				}
+				switch mode {
+				case "http":
+					w.WriteHeader(http.StatusBadGateway)
+				case "rpc":
+					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "error": map[string]any{"code": -32603, "message": "later page failed"}})
+				case "cancel":
+					cancel()
+					select {
+					case <-r.Context().Done():
+					case <-release:
+					}
+				case "timeout":
+					select {
+					case <-r.Context().Done():
+					case <-release:
+					}
+				}
+			}))
+			defer server.Close()
+			defer close(release)
+			state := workitemPaginationState(server.URL)
+			if err := (&McpExecutorStep{}).Execute(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "timeout" {
+				state.OutputConfig["mcp.http_client"] = &http.Client{Timeout: time.Second}
+			}
+			err := (&AutoPaginateStep{}).Execute(ctx, state)
+			if err == nil || calls.Load() != 3 || state.Result.Metadata["auto_paginated"] != nil {
+				t.Fatalf("incomplete pagination succeeded: requests=%d err=%v meta=%#v", calls.Load(), err, state.Result.Metadata)
+			}
+			if mode == "cancel" {
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("cancellation cause lost: %v", err)
+				}
+			} else {
+				wantCode := map[string]string{"http": "SERVER_HTTP_ERROR", "rpc": "SERVER_CALL_FAILED", "timeout": "SERVER_TIMEOUT"}[mode]
+				var me *meerrors.MeegleError
+				if !errors.As(err, &me) || me.Code != wantCode {
+					t.Errorf("error=%v, want %s", err, wantCode)
+				}
+			}
+		})
 	}
 }

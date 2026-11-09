@@ -54,6 +54,8 @@ type Example struct {
 }
 
 type FlagDef struct {
+	// NoFileInput marks command-local controls that cannot come from --input-file.
+	NoFileInput bool
 	Name        string
 	Short       string
 	Type        string

@@ -15,6 +15,12 @@ import (
 // `[a-z][a-z0-9-]*` shape so paths stay predictable in shell completion.
 var commandNamePattern = regexp.MustCompile(`^\+?[a-z][a-z0-9-]*$`)
 
+// TagLiteralCommandName opts a node into preserving a validated external name.
+// It applies only to command names, never to flags or aliases.
+const TagLiteralCommandName = "literal_command_name"
+
+var literalCommandNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+
 // protocolKeywords are terms that must not appear in user-facing text
 // (help, brief, examples) in pipeline/ and output/ layers.
 var protocolKeywords = []string{"mcp", "json-rpc", "json_rpc", "tool_call", "tools/list", "tools/call"}
@@ -87,7 +93,8 @@ func validateNode(result *ValidationResult, node *CommandNode, path []string, ha
 	// R2: name_format
 	if strings.TrimSpace(node.Name) == "" {
 		result.Errors = append(result.Errors, ValidationError{Path: pathString, Field: "name", Rule: "R_NAME_REQUIRED", Level: "error", Message: "node name is required"})
-	} else if !commandNamePattern.MatchString(node.Name) {
+	} else if !commandNamePattern.MatchString(node.Name) &&
+		!(node.Meta.Tags[TagLiteralCommandName] == "true" && literalCommandNamePattern.MatchString(node.Name)) {
 		result.Errors = append(result.Errors, ValidationError{Path: pathString, Field: "name", Rule: "R_NAME_FORMAT", Level: "error", Message: fmt.Sprintf("invalid node name %q", node.Name)})
 	}
 

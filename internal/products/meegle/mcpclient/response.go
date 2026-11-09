@@ -45,6 +45,30 @@ type mcpToolResponse struct {
 	IsError bool              `json:"isError"`
 }
 
+// toolErrorRetryable reads the backend's tools/call error contract from the
+// first content entry: error=<category>,message=<text>,retriable=<true|false>.
+// Message text may contain commas and newlines, so only its terminal retriable
+// field is authoritative. Ordinary messages and malformed contracts default false.
+func toolErrorRetryable(content []mcpContentEntry) bool {
+	if len(content) == 0 || content[0].Type != "text" {
+		return false
+	}
+	fields, ok := strings.CutPrefix(content[0].Text, "error=")
+	if !ok {
+		return false
+	}
+	category, message, ok := strings.Cut(fields, ",message=")
+	if !ok || category == "" || strings.TrimSpace(category) != category || strings.ContainsAny(category, ",=\r\n") {
+		return false
+	}
+	const marker = ",retriable="
+	index := strings.LastIndex(message, marker)
+	if index < 0 {
+		return false
+	}
+	return message[index+len(marker):] == "true"
+}
+
 func unwrapResponse(raw json.RawMessage) (*Response, error) {
 	if len(raw) == 0 {
 		return &Response{}, nil
@@ -81,7 +105,8 @@ func unwrapResponse(raw json.RawMessage) (*Response, error) {
 		if msg == "" {
 			msg = "server returned error"
 		}
-		return nil, meerrors.NewServerError("SERVER_CALL_FAILED", msg).WithLogID(result.LogID)
+		return nil, meerrors.NewServerError("SERVER_CALL_FAILED", msg).
+			WithRetryable(toolErrorRetryable(resp.Content)).WithLogID(result.LogID)
 	}
 
 	if len(dataTexts) == 0 {

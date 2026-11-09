@@ -28,12 +28,7 @@ func (s *ParamMergeStep) Execute(ctx context.Context, state *PipelineContext) er
 	if state.Parsed.ExplicitFlags == nil {
 		state.Parsed.ExplicitFlags = make(map[string]any)
 	}
-	merged, err := frameworkrouter.MergeStructuredParams(state.Parsed.Flags, state.Parsed.ExplicitFlags)
-	if err != nil {
-		return err
-	}
-	state.Parsed.Flags = merged
-	return nil
+	return frameworkrouter.MergeCommandParams(ctx, state.Parsed)
 }
 
 type ParamValidateStep struct{}
@@ -180,7 +175,7 @@ type OutputStep struct {
 func (s *OutputStep) Name() string { return "output" }
 
 func (s *OutputStep) Execute(ctx context.Context, state *PipelineContext) error {
-	if s == nil || s.Processor == nil || state == nil || state.Result == nil {
+	if s == nil || s.Processor == nil || state == nil {
 		return nil
 	}
 	return s.Processor.Process(ctx, &frameworkoutput.Context{

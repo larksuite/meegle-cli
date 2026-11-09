@@ -58,7 +58,10 @@ func (Stdio) Write(ctx *frameworkoutput.Context, payload []byte) error {
 	if payload[len(payload)-1] != '\n' {
 		payload = append(payload, '\n')
 	}
-	_, err := writer.Write(payload)
+	n, err := writer.Write(payload)
+	if err == nil && n != len(payload) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 

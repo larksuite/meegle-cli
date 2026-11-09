@@ -95,9 +95,10 @@ description: |
 | --mql | string | 首查必填 | MQL 查询语句（完整 SQL）。单次最多返回 50 条；`LIMIT n` 只用于截断（n ≤ 50），不用于翻页 |
 | --session-id | string | 翻页必填 | 翻页用。取自首查返回体的 `session_id`；翻页时只传 `--project-key` + `--session-id` + `--group-pagination-list`，不要再传 `--mql`，否则按新查询重新执行、翻页参数被忽略 |
 | --group-pagination-list | array | 翻页必填 | 翻页参数，与 `--session-id` 配合使用，首查不传。每页 50 条，总页数 = ceil(`list[0].count` / 50)；目前只支持传入一组 `[{"group_id":"<分组ID>","page_num":N}]` |
+| --features | object | 否 | 查询特性开关，键值均为字符串，默认不传。`{"FindAborted":"true"}` 让结果包含已终止的工作项（默认不含）；只查已终止的，还要在 MQL 的 WHERE 里写 `` `abort_reason` IS NOT NULL ``（这是 MQL 条件，不放进本参数）。详见 [references/mql-basics.md §11](references/mql-basics.md) |
 
 **翻页取全量**（要全部结果时必须走这条链路，不要用 `LIMIT offset, n` 翻页）：
-1. 首查只传 `--project-key` + `--mql`，返回第 1 页（最多 50 条）。
+1. 首查传 `--project-key` + `--mql`（需要已终止的工作项时再加 `--features`），返回第 1 页（最多 50 条）。
    从返回体取 `session_id`、`list[0].count`、`list[0].group_infos[].group_id`；无分组查询的 `group_id` 为 `"1"`。
 2. 之后每页传 `--project-key` + `--session-id` + `--group-pagination-list '[{"group_id":"<分组ID>","page_num":N}]'`，不传 `--mql`。
    `page_num` 从 2 取到 ceil(count/50)；第 1 页已由首查返回。

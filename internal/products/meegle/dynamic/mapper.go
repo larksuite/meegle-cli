@@ -4,7 +4,9 @@
 package dynamic
 
 import (
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
 )
@@ -112,6 +114,10 @@ func MapTool(tool types.ToolDefinition) types.MappedCommand {
 			Parameters: tool.Parameters, HasFields: entry.hasFields,
 		}
 	}
+	if strings.Contains(tool.Name, "__") {
+		command, _ := MapToolName(tool)
+		return command
+	}
 	if tool.Metadata != nil && tool.Metadata.Resource != "" && tool.Metadata.Method != "" {
 		return types.MappedCommand{
 			Resource: tool.Metadata.Resource, Method: tool.Metadata.Method,
@@ -120,6 +126,31 @@ func MapTool(tool types.ToolDefinition) types.MappedCommand {
 	}
 	// Unmapped tools are not exposed
 	return types.MappedCommand{}
+}
+
+var toolNameSegmentPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+
+// MapToolName maps the two literal segments of a resource__method tool name.
+// Legacy names have no result; malformed names and conflicting hints are
+// isolated. Callers retain their existing fallback/metadata priority for legacy tools.
+func MapToolName(tool types.ToolDefinition) (types.MappedCommand, *types.ToolDefinitionIssue) {
+	if tool.Issue != nil {
+		return types.MappedCommand{}, tool.Issue
+	}
+	if !strings.Contains(tool.Name, "__") {
+		return types.MappedCommand{}, nil
+	}
+	resource, method, _ := strings.Cut(tool.Name, "__")
+	if strings.Count(tool.Name, "__") != 1 || !toolNameSegmentPattern.MatchString(resource) || !toolNameSegmentPattern.MatchString(method) {
+		return types.MappedCommand{}, &types.ToolDefinitionIssue{Code: "invalid_tool_name"}
+	}
+	if tool.Metadata != nil && (tool.Metadata.Resource != resource || tool.Metadata.Method != method) {
+		return types.MappedCommand{}, &types.ToolDefinitionIssue{Code: "conflicting_mapping", Path: resource + "/" + method}
+	}
+	return types.MappedCommand{
+		Resource: resource, Method: method, ToolName: tool.Name,
+		Description: tool.Description, Parameters: tool.Parameters,
+	}, nil
 }
 
 // IsFallbackTool reports whether name has a stable built-in CLI mapping.

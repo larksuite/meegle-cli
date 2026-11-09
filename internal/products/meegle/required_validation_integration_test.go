@@ -121,3 +121,47 @@ func newRequiredValidationCLIApp(t *testing.T) *cliapp.App {
 	}
 	return app
 }
+
+func TestProductSuggestionsCLI(t *testing.T) {
+	for _, args := range [][]string{
+		{"workflow", "list-state-transitions"},
+		{"attachment", "+upload", "sample.txt", "--resource-type", "13", "--project-key", "sample"},
+		{"workitem", "+batch-get"},
+	} {
+		var baselineError *meerrors.MeegleError
+		var baselineStderr string
+		for _, name := range []string{"meegle", "sample-cli", ""} {
+			lister := &successLister{tools: []types.ToolDefinition{
+				{Name: "get_transitable_states", Parameters: []types.ToolParameter{{Name: "project_key", Type: "string", Required: true}}},
+				{Name: "get_workitem_brief", Parameters: []types.ToolParameter{{Name: "work_item_id", Type: "integer", Required: true}}},
+				{Name: "upload_file"},
+			}}
+			setup := NewDynamicRegistrySetup(lister, nil)
+			app, err := cliapp.New(cliapp.WithAppName(name), cliapp.WithSetup(setup), cliapp.WithPipelineFactory(newPipelineFactory(setup, nil, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			err = app.ExecuteWithIO(context.Background(), append(append([]string(nil), args...), "--dry-run", "--format", "json"), &stdout, &stderr)
+			var me *meerrors.MeegleError
+			if !errors.As(err, &me) || stdout.Len() != 0 {
+				t.Fatalf("name=%q args=%v error=%v stdout=%s", name, args, err, stdout.String())
+			}
+			if name == "meegle" {
+				baselineError = me
+				baselineStderr = stderr.String()
+				continue
+			}
+			wantName := name
+			if wantName == "" {
+				wantName = "meegle"
+			}
+			if me.Suggestion != strings.ReplaceAll(baselineError.Suggestion, "meegle", wantName) || me.Code != baselineError.Code || me.Message != baselineError.Message || me.ExitCode != baselineError.ExitCode {
+				t.Fatalf("name=%q baseline=%#v got=%#v", name, baselineError, me)
+			}
+			if strings.ReplaceAll(stderr.String(), wantName, "meegle") != baselineStderr {
+				t.Fatalf("JSON error changed beyond product name: %s / %s", baselineStderr, stderr.String())
+			}
+		}
+	}
+}

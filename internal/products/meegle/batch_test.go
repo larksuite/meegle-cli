@@ -19,6 +19,8 @@ import (
 	"time"
 
 	meerrors "github.com/larksuite/meegle-cli/internal/products/meegle/errors"
+	"github.com/larksuite/meegle-cli/internal/products/meegle/types"
+	"github.com/larksuite/meegle-cli/pkg/framework/adapter"
 	"github.com/larksuite/meegle-cli/pkg/framework/pipeline"
 	"github.com/larksuite/meegle-cli/pkg/framework/registry"
 	"github.com/larksuite/meegle-cli/pkg/framework/router"
@@ -962,5 +964,32 @@ func TestParseIDsFromFile_HashAtLineStart(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "42" {
 		t.Errorf("got %v, want [42]", got)
+	}
+}
+
+func TestBatchTerminalErrorProductName(t *testing.T) {
+	for _, name := range []string{"meegle", "sample-cli", "", "missing-source"} {
+		t.Run(name, func(t *testing.T) {
+			state := batchState(map[string]any{"work-item-ids": []string{"1"}})
+			if name != "missing-source" {
+				state.Input = &adapter.RawInput{Source: adapter.InputSourceMeta{Product: name}}
+			}
+			backendErr := meerrors.NewServerError("SERVER_HTTP_ERROR", "tool sample_get rejected").WithHTTPStatus(401).WithRetryable(false)
+			caller := &fakeCaller{handler: func(map[string]any) (*mcpResponse, error) { return nil, backendErr }}
+			step := &BatchExecutorStep{
+				clientFactory: func(*pipeline.PipelineContext) mcpToolCaller { return caller },
+				CommandsFunc: func() []types.MappedCommand {
+					return []types.MappedCommand{{Resource: "record", Method: "get", ToolName: "sample_get"}}
+				},
+			}
+			err := step.Execute(context.Background(), state)
+			wantName := name
+			if name == "" || name == "missing-source" {
+				wantName = "meegle"
+			}
+			if err != backendErr || backendErr.Message != "tool "+wantName+" record get rejected" || backendErr.HTTPStatus != 401 || backendErr.Code != "SERVER_HTTP_ERROR" || backendErr.IsRetryable() || state.Result != nil {
+				t.Fatalf("error=%#v result=%#v", err, state.Result)
+			}
+		})
 	}
 }

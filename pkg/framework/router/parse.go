@@ -47,6 +47,7 @@ func ParseInput(reg *registry.Registry, input *frameworkadapter.RawInput) (*Pars
 		IsHelp:        isHelp,
 		RawArgs:       append([]string(nil), input.Args...),
 		RawFlags:      rawFlags,
+		ControlFlags:  controlFlagNames(reg.Tree().GlobalFlags),
 	}, nil
 }
 

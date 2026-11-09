@@ -55,6 +55,7 @@
 | `RELATIVE_DATETIME_*` 报 `unexpected operator for future` / `invalid argument` | 见 [mql-time-status.md §1.1 兼容矩阵](mql-time-status.md)：`_EQ` 只接受 `today`/`tomorrow`/`yesterday` 且**无 offset**；`_GT/_GE/_LT/_LE` 只接受 `today`（可带 `±Nd`）；`future`/`past`+`Nd` 只允许配 `_BETWEEN` |
 | ORDER BY 字段不支持排序 | 换可排序字段（如 `updated_at` / `start_time` / `work_item_id`）或移除 |
 | MQL 与 session_id 都空 | 首查必须传 MQL；翻页必须传首查返回的 session_id |
+| 查已终止的工作项结果为空 / 用户要「含已终止」但结果里没有 | 未传开关：加 `--features '{"FindAborted":"true"}'`（值是字符串 `"true"`，不是布尔）。见 [mql-basics.md §11](mql-basics.md) |
 | 翻页参数缺失 / 翻页仍回第 1 页 | 传 `--group-pagination-list '[{"group_id":"1","page_num":N}]'`（无分组时 `group_id` 固定 `"1"`，N 从 2 起）；翻页时不要再传 `--mql`，同传会按新查询重跑 |
 | 未传 project_key | `workitem query` 的 `--project-key` 必填 |
 | 空间不存在 | 用 `project search` 确认 |

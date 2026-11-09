@@ -54,6 +54,9 @@ func (p *Processor) RenderError(state *Context, err error) ([]byte, error) {
 
 func (p *Processor) Process(ctx context.Context, state *Context) error {
 	_ = ctx
+	if p != nil && state != nil && state.Parsed != nil && len(state.Parsed.FileOutputs) > 0 {
+		return p.processFiles(ctx, state)
+	}
 	if p == nil || state == nil || state.Result == nil {
 		return nil
 	}
